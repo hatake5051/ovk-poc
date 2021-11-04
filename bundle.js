@@ -8225,8 +8225,32 @@ function CONCAT(A, B) {
     return ans;
 }
 
-function newSeedDeriver() {
-    return new SeedImple([{ s: UTF8('Hello, World') }], UTF8('abcdefghijklmnop'));
+class KID {
+    constructor(kid) {
+        this.kid = kid;
+    }
+    static async genKeyHandle(key, secret) {
+        const encKey = await window.crypto.subtle.importKey('raw', key, 'AES-GCM', false, ['encrypt']);
+        const iv = window.crypto.getRandomValues(new Uint8Array(12));
+        const enc = await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, encKey, secret);
+        return new KID(BASE64URL(iv) + '.' + BASE64URL(new Uint8Array(enc)));
+    }
+    async deriveSecret(key) {
+        const decKey = await window.crypto.subtle.importKey('raw', key, 'AES-GCM', false, ['decrypt']);
+        const kid_splited = this.kid.split('.');
+        if (kid_splited.length !== 2) {
+            throw new TypeError('Invalid KID');
+        }
+        const [iv_b64, ctext_b64] = kid_splited;
+        let dec;
+        try {
+            dec = await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv: BASE64URL_DECODE(iv_b64) }, decKey, BASE64URL_DECODE(ctext_b64));
+        }
+        catch {
+            throw new EvalError(`Invalid KID`);
+        }
+        return new Uint8Array(dec);
+    }
 }
 class ECPubKey {
     constructor(kid, _x, _y) {
@@ -8259,11 +8283,20 @@ class ECPubKey {
     static fromPrivKey(pk) {
         return new ECPubKey(pk.kid, pk.x('oct'), pk.y('oct'));
     }
+    static fromJWK(jwk) {
+        return new ECPubKey(new KID(jwk.kid), BASE64URL_DECODE(jwk.x), BASE64URL_DECODE(jwk.y));
+    }
     static is(arg) {
         return arg instanceof ECPubKey;
     }
     toJWK() {
-        return { kty: this.kty, crv: this.crv, x: this.x('b64u'), y: this.y('b64u') };
+        return {
+            kty: this.kty,
+            kid: this.kid.kid,
+            crv: this.crv,
+            x: this.x('b64u'),
+            y: this.y('b64u'),
+        };
     }
     toString() {
         return JSON.stringify(this.toJWK());
@@ -8319,12 +8352,16 @@ class ECPrivKey {
         const y_bytes = HexStr2Uint8Array(xy_hexstr.slice(32 * 2 + 2));
         return new ECPrivKey(kid, x_bytes, y_bytes, d_bytes);
     }
+    static fromJWK(jwk) {
+        return new ECPrivKey(new KID(jwk.kid), BASE64URL_DECODE(jwk.x), BASE64URL_DECODE(jwk.y), BASE64URL_DECODE(jwk.d));
+    }
     toECPubKey() {
         return ECPubKey.fromPrivKey(this);
     }
     toJWK() {
         return {
             kty: this.kty,
+            kid: this.kid.kid,
             crv: this.crv,
             x: this.x('b64u'),
             y: this.y('b64u'),
@@ -8332,23 +8369,61 @@ class ECPrivKey {
         };
     }
 }
+
+function newSeed() {
+    return new SeedImple([], UTF8('abcdefghijklmnop'));
+}
 class SeedImple {
     constructor(seeds, key) {
         this.seeds = seeds;
         this.key = key;
+    }
+    async startKeyAgreement() {
+        const sk_api = await window.crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+        if (!sk_api.publicKey || !sk_api.privateKey) {
+            throw new TypeError('Extractive になっていない');
+        }
+        const sk = await window.crypto.subtle.exportKey('jwk', sk_api.privateKey);
+        const pk = await window.crypto.subtle.exportKey('jwk', sk_api.publicKey);
+        this.seeds.push({ eprivk: ECPrivKey.fromJWK(sk) });
+        return ECPubKey.fromJWK(pk);
+    }
+    async agree(received) {
+        try {
+            const pub_api = await window.crypto.subtle.importKey('jwk', received.toJWK(), { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+            const pop = this.seeds.pop();
+            if (!pop) {
+                throw new RangeError(`Seed 共有を始めていない`);
+            }
+            const { s, eprivk } = pop;
+            if (!eprivk || s) {
+                throw new EvalError(`有効でないSeed の共有`);
+            }
+            const priv_api = await window.crypto.subtle.importKey('jwk', eprivk.toJWK(), { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveBits']);
+            const seed = await window.crypto.subtle.deriveBits({ name: 'ECDH', public: pub_api }, priv_api, 256);
+            this.seeds.push({ s: new Uint8Array(seed) });
+            return true;
+        }
+        catch (e) {
+            console.log(e);
+            return false;
+        }
     }
     get seed() {
         if (this.seeds.length != 1) {
             throw new RangeError('Seed を一意に識別できなかった');
         }
         const { s } = this.seeds[0];
+        if (!s) {
+            throw new EvalError(`Seed が有効でない`);
+        }
         return s;
     }
     async OVK(r) {
         const d = await kdf(this.seed, r, 256);
         const kid = await KID.genKeyHandle(this.key, r);
-        const sk = await deriveSK(d, kid);
-        return sk;
+        const pk = new elliptic.ec('p256').keyFromPrivate(d);
+        return ECPrivKey.fromECKeyPair(pk, kid);
     }
     async deriveOVK(r) {
         const sk = await this.OVK(r);
@@ -8392,56 +8467,62 @@ async function kdf(kdfkey, salt, length) {
     const derivedKeyMaterial = await window.crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt, info: new Uint8Array() }, key, length);
     return new Uint8Array(derivedKeyMaterial);
 }
-class KID {
-    constructor(kid) {
-        this.kid = kid;
-    }
-    static async genKeyHandle(key, secret) {
-        const encKey = await window.crypto.subtle.importKey('raw', key, 'AES-GCM', false, ['encrypt']);
-        const iv = window.crypto.getRandomValues(new Uint8Array(12));
-        const enc = await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, encKey, secret);
-        return new KID(BASE64URL(iv) + '.' + BASE64URL(new Uint8Array(enc)));
-    }
-    async deriveSecret(key) {
-        const decKey = await window.crypto.subtle.importKey('raw', key, 'AES-GCM', false, ['decrypt']);
-        const kid_splited = this.kid.split('.');
-        if (kid_splited.length !== 2) {
-            throw new TypeError('Invalid KID');
-        }
-        const [iv_b64, ctext_b64] = kid_splited;
-        let dec;
-        try {
-            dec = await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv: BASE64URL_DECODE(iv_b64) }, decKey, BASE64URL_DECODE(ctext_b64));
-        }
-        catch {
-            throw new EvalError(`Invalid KID`);
-        }
-        return new Uint8Array(dec);
-    }
-}
-async function deriveSK(secret, kid) {
-    const pk = new elliptic.ec('p256').keyFromPrivate(secret);
-    return ECPrivKey.fromECKeyPair(pk, kid);
-}
 
 (async () => {
     const svcID = 'auth.example.com';
+    console.log('デバイス間でシードの共有を始めます。');
+    const seedA = newSeed();
+    // DeviceA
+    const dhkeyA = await (async () => {
+        const seed = seedA;
+        const dhkey = await seed.startKeyAgreement();
+        return dhkey;
+    })();
+    const seedB = newSeed();
+    // DeviceB
+    const dhkeyB = await (async () => {
+        const seed = seedB;
+        const dhkey = await seed.startKeyAgreement();
+        return dhkey;
+    })();
+    // DeviceA
+    await (async (dhkey) => {
+        const seed = seedA;
+        const isSucceeded = await seed.agree(dhkey);
+        if (isSucceeded) {
+            console.log('デバイスA は デバイス B とのシード共有に成功');
+        }
+        else {
+            throw new EvalError(`ネゴ失敗`);
+        }
+    })(dhkeyB);
+    // DeviceB
+    await (async (dhkey) => {
+        const seed = seedB;
+        const isSucceeded = await seed.agree(dhkey);
+        if (isSucceeded) {
+            console.log('デバイスB は デバイス A とのシード共有に成功');
+        }
+        else {
+            throw new EvalError(`ネゴ失敗`);
+        }
+    })(dhkeyA);
     //  DeviceA
-    console.log('一台めのデバイスで登録する');
+    console.log('デバイスAでサービスに登録する');
     const { ovk, mac } = await (async () => {
-        const seed = newSeedDeriver();
+        const seed = seedA;
         const r = UTF8('ABCDEFGHIJKL');
         const ovk = await seed.deriveOVK(r);
         const mac = await seed.macOVK(r, svcID);
         return { ovk, mac };
     })();
     // auth.example.com
-    console.log('Ownership Verification Key をサービスは保存する');
+    console.log('サービスは Ownership Verification Key を保存する');
     const authSvcDB = { ovk };
     // DeviceB
-    console.log('2台めのデバイスで登録する');
+    console.log('デバイスBでサービスに登録する');
     const { cred, sig } = await (async (ovk, mac) => {
-        const seed = newSeedDeriver();
+        const seed = seedB;
         const isValid = await seed.verifyOVK(ovk, svcID, mac);
         if (!isValid) {
             throw new EvalError(`seed.verifyOVK failed`);
@@ -8455,6 +8536,11 @@ async function deriveSK(secret, kid) {
     await (async (cred, sig) => {
         const pk_api = await window.crypto.subtle.importKey('jwk', authSvcDB.ovk.toJWK(), { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
         const isValid = await window.crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, pk_api, sig, cred);
-        console.log(isValid);
+        if (isValid) {
+            console.log('サービスはデバイスB のクレデンシャル がデバイスA の OVK で検証できた');
+        }
+        else {
+            console.log('失敗');
+        }
     })(cred, sig);
 })();

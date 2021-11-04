@@ -1,9 +1,9 @@
 import { ec } from 'elliptic';
-import { ECPrivKey, ECPubKey, KID } from 'key';
+import { ECPirvJWK, ECPrivKey, ECPubJWK, ECPubKey, KID } from 'key';
 import { CONCAT, UTF8 } from 'utility';
 
-export function newSeedDeriver(): SeedDeriver {
-  return new SeedImple([{ s: UTF8('Hello, World') }], UTF8('abcdefghijklmnop'));
+export function newSeed(): SeedDeriver & SeedNavigator {
+  return new SeedImple([], UTF8('abcdefghijklmnop'));
 }
 
 interface SeedDeriver {
@@ -16,19 +16,73 @@ interface SeedDeriver {
 }
 
 interface SeedNavigator {
-  startKeyAgreement: () => Promise<ECPubKey>;
-  agree: (received: ECPubKey) => Promise<boolean>;
-  migrated: () => Promise<boolean>;
+  startKeyAgreement(): Promise<ECPubKey>;
+  agree(received: ECPubKey): Promise<boolean>;
 }
 
-class SeedImple implements SeedDeriver {
-  constructor(private seeds: { s: Uint8Array }[], private key: Uint8Array) {}
+class SeedImple implements SeedDeriver, SeedNavigator {
+  constructor(private seeds: { s?: Uint8Array; eprivk?: ECPrivKey }[], private key: Uint8Array) {}
+
+  async startKeyAgreement(): Promise<ECPubKey> {
+    const sk_api = await window.crypto.subtle.generateKey(
+      { name: 'ECDH', namedCurve: 'P-256' },
+      true,
+      ['deriveBits']
+    );
+    if (!sk_api.publicKey || !sk_api.privateKey) {
+      throw new TypeError('Extractive になっていない');
+    }
+    const sk = await window.crypto.subtle.exportKey('jwk', sk_api.privateKey);
+    const pk = await window.crypto.subtle.exportKey('jwk', sk_api.publicKey);
+    this.seeds.push({ eprivk: ECPrivKey.fromJWK(sk as ECPirvJWK) });
+    return ECPubKey.fromJWK(pk as ECPubJWK);
+  }
+
+  async agree(received: ECPubKey): Promise<boolean> {
+    try {
+      const pub_api = await window.crypto.subtle.importKey(
+        'jwk',
+        received.toJWK(),
+        { name: 'ECDH', namedCurve: 'P-256' },
+        false,
+        []
+      );
+      const pop = this.seeds.pop();
+      if (!pop) {
+        throw new RangeError(`Seed 共有を始めていない`);
+      }
+      const { s, eprivk } = pop;
+      if (!eprivk || s) {
+        throw new EvalError(`有効でないSeed の共有`);
+      }
+      const priv_api = await window.crypto.subtle.importKey(
+        'jwk',
+        eprivk.toJWK(),
+        { name: 'ECDH', namedCurve: 'P-256' },
+        false,
+        ['deriveBits']
+      );
+      const seed = await window.crypto.subtle.deriveBits(
+        { name: 'ECDH', public: pub_api },
+        priv_api,
+        256
+      );
+      this.seeds.push({ s: new Uint8Array(seed) });
+      return true;
+    } catch (e) {
+      console.log(e);
+      return false;
+    }
+  }
 
   private get seed(): Uint8Array {
     if (this.seeds.length != 1) {
       throw new RangeError('Seed を一意に識別できなかった');
     }
     const { s } = this.seeds[0];
+    if (!s) {
+      throw new EvalError(`Seed が有効でない`);
+    }
     return s;
   }
 

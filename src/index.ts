@@ -1,13 +1,52 @@
-import { newSeedDeriver } from 'seed';
+import { newSeed } from 'seed';
 import { UTF8 } from 'utility';
 
 (async () => {
   const svcID = 'auth.example.com';
 
+  console.log('デバイス間でシードの共有を始めます。');
+  const seedA = newSeed();
+  // DeviceA
+  const dhkeyA = await (async () => {
+    const seed = seedA;
+    const dhkey = await seed.startKeyAgreement();
+    return dhkey;
+  })();
+
+  const seedB = newSeed();
+  // DeviceB
+  const dhkeyB = await (async () => {
+    const seed = seedB;
+    const dhkey = await seed.startKeyAgreement();
+    return dhkey;
+  })();
+
+  // DeviceA
+  await (async (dhkey) => {
+    const seed = seedA;
+    const isSucceeded = await seed.agree(dhkey);
+    if (isSucceeded) {
+      console.log('デバイスA は デバイス B とのシード共有に成功');
+    } else {
+      throw new EvalError(`ネゴ失敗`);
+    }
+  })(dhkeyB);
+
+  // DeviceB
+  await (async (dhkey) => {
+    const seed = seedB;
+    const isSucceeded = await seed.agree(dhkey);
+    if (isSucceeded) {
+      console.log('デバイスB は デバイス A とのシード共有に成功');
+    } else {
+      throw new EvalError(`ネゴ失敗`);
+    }
+  })(dhkeyA);
+
   //  DeviceA
-  console.log('一台めのデバイスで登録する');
+  console.log('デバイスAでサービスに登録する');
   const { ovk, mac } = await (async () => {
-    const seed = newSeedDeriver();
+    const seed = seedA;
 
     const r = UTF8('ABCDEFGHIJKL');
     const ovk = await seed.deriveOVK(r);
@@ -17,13 +56,13 @@ import { UTF8 } from 'utility';
   })();
 
   // auth.example.com
-  console.log('Ownership Verification Key をサービスは保存する');
+  console.log('サービスは Ownership Verification Key を保存する');
   const authSvcDB = { ovk };
 
   // DeviceB
-  console.log('2台めのデバイスで登録する');
+  console.log('デバイスBでサービスに登録する');
   const { cred, sig } = await (async (ovk, mac) => {
-    const seed = newSeedDeriver();
+    const seed = seedB;
     const isValid = await seed.verifyOVK(ovk, svcID, mac);
     if (!isValid) {
       throw new EvalError(`seed.verifyOVK failed`);
@@ -49,6 +88,10 @@ import { UTF8 } from 'utility';
       sig,
       cred
     );
-    console.log(isValid);
+    if (isValid) {
+      console.log('サービスはデバイスB のクレデンシャル がデバイスA の OVK で検証できた');
+    } else {
+      console.log('失敗');
+    }
   })(cred, sig);
 })();

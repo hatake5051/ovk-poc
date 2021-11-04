@@ -2,7 +2,7 @@ import { ec } from 'elliptic';
 import { BASE64URL, BASE64URL_DECODE, HexStr2Uint8Array } from 'utility';
 
 export class KID {
-  private constructor(private kid: string) {}
+  constructor(public kid: string) {}
 
   static async genKeyHandle(key: Uint8Array, secret: Uint8Array): Promise<KID> {
     const encKey = await window.crypto.subtle.importKey('raw', key, 'AES-GCM', false, ['encrypt']);
@@ -31,6 +31,8 @@ export class KID {
     return new Uint8Array(dec);
   }
 }
+
+export type ECPubJWK = { kty: 'EC'; kid: string; crv: string; x: string; y: string };
 
 export class ECPubKey {
   private constructor(public kid: KID, private _x: Uint8Array, private _y: Uint8Array) {}
@@ -69,18 +71,30 @@ export class ECPubKey {
     return new ECPubKey(pk.kid, pk.x('oct'), pk.y('oct'));
   }
 
+  static fromJWK(jwk: ECPubJWK): ECPubKey {
+    return new ECPubKey(new KID(jwk.kid), BASE64URL_DECODE(jwk.x), BASE64URL_DECODE(jwk.y));
+  }
+
   static is(arg: unknown): arg is ECPubKey {
     return arg instanceof ECPubKey;
   }
 
-  toJWK(): { kty: 'EC'; crv: string; x: string; y: string } {
-    return { kty: this.kty, crv: this.crv, x: this.x('b64u'), y: this.y('b64u') };
+  toJWK(): ECPubJWK {
+    return {
+      kty: this.kty,
+      kid: this.kid.kid,
+      crv: this.crv,
+      x: this.x('b64u'),
+      y: this.y('b64u'),
+    };
   }
 
   toString(): string {
     return JSON.stringify(this.toJWK());
   }
 }
+
+export type ECPirvJWK = { kty: 'EC'; kid: string; crv: string; x: string; y: string; d: string };
 
 export class ECPrivKey {
   private constructor(
@@ -146,13 +160,23 @@ export class ECPrivKey {
     return new ECPrivKey(kid, x_bytes, y_bytes, d_bytes);
   }
 
+  static fromJWK(jwk: ECPirvJWK): ECPrivKey {
+    return new ECPrivKey(
+      new KID(jwk.kid),
+      BASE64URL_DECODE(jwk.x),
+      BASE64URL_DECODE(jwk.y),
+      BASE64URL_DECODE(jwk.d)
+    );
+  }
+
   toECPubKey(): ECPubKey {
     return ECPubKey.fromPrivKey(this);
   }
 
-  toJWK(): { kty: 'EC'; crv: string; x: string; y: string; d: string } {
+  toJWK(): ECPirvJWK {
     return {
       kty: this.kty,
+      kid: this.kid.kid,
       crv: this.crv,
       x: this.x('b64u'),
       y: this.y('b64u'),
