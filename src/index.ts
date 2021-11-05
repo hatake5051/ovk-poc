@@ -27,7 +27,12 @@ import { BASE64URL, BASE64URL_DECODE, UTF8, UTF8_DECODE } from 'utility';
     string,
     Record<
       string,
-      { ovk_jwk: ECPubJWK; mac_b64u: string; creds: { cred_utf8: string; sig_b64u: string }[] }
+      {
+        ovk_jwk: ECPubJWK;
+        r_b64u: string;
+        mac_b64u: string;
+        creds: { cred_utf8: string; sig_b64u: string }[];
+      }
     >
   > = {
     svc1: {},
@@ -47,7 +52,7 @@ import { BASE64URL, BASE64URL_DECODE, UTF8, UTF8_DECODE } from 'utility';
   // DeviceA
   await (async () => {
     const seed = DeviceA.seed;
-    const dhkey = await seed.startKeyAgreement();
+    const dhkey = await seed.startAgreement();
     console.log('Device A でシードの共有を開始');
     DeviceB.epk = dhkey.toJWK();
   })();
@@ -55,7 +60,7 @@ import { BASE64URL, BASE64URL_DECODE, UTF8, UTF8_DECODE } from 'utility';
   // DeviceB
   await (async () => {
     const seed = DeviceB.seed;
-    const dhkey = await seed.startKeyAgreement();
+    const dhkey = await seed.startAgreement();
     console.log('Device B でシードの共有を開始');
     DeviceA.epk = dhkey.toJWK();
   })();
@@ -99,13 +104,14 @@ import { BASE64URL, BASE64URL_DECODE, UTF8, UTF8_DECODE } from 'utility';
       const seed = DeviceA.seed;
       const r = window.crypto.getRandomValues(new Uint8Array(16));
       const ovk = await seed.deriveOVK(r);
-      const mac = await seed.macOVK(r, svcIDs[svc]);
+      const mac = await seed.macOVK(ovk, r, svcIDs[svc]);
 
-      const sig = await seed.signOVK(ovk, cred);
+      const sig = await seed.signOVK(ovk, r, cred);
 
       SvcDB[svc]['alice'] = {
         ovk_jwk: ovk.toJWK(),
         mac_b64u: BASE64URL(mac),
+        r_b64u: BASE64URL(r),
         creds: [{ cred_utf8: UTF8_DECODE(cred), sig_b64u: BASE64URL(sig) }],
       };
     })();
@@ -120,14 +126,15 @@ import { BASE64URL, BASE64URL_DECODE, UTF8, UTF8_DECODE } from 'utility';
       const cred = UTF8(`Dummy Credential in DevB for ${svc}`);
 
       const seed = DeviceB.seed;
-      const { ovk_jwk, mac_b64u } = SvcDB[svc]['alice'];
+      const { ovk_jwk, r_b64u, mac_b64u } = SvcDB[svc]['alice'];
       const ovk = ECPubKey.fromJWK(ovk_jwk);
-      const isValid = await seed.verifyOVK(ovk, svcIDs[svc], BASE64URL_DECODE(mac_b64u));
+      const r = BASE64URL_DECODE(r_b64u);
+      const isValid = await seed.verifyOVK(ovk, r, svcIDs[svc], BASE64URL_DECODE(mac_b64u));
       if (!isValid) {
         throw new EvalError(`seed.verifyOVK failed`);
       }
 
-      const sig = await seed.signOVK(ovk, cred);
+      const sig = await seed.signOVK(ovk, r, cred);
 
       SvcDB[svc]['alice'].creds.push({ cred_utf8: UTF8_DECODE(cred), sig_b64u: BASE64URL(sig) });
     })();

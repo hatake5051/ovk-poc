@@ -1,6 +1,6 @@
 import { ec } from 'elliptic';
 import { ECPirvJWK, ECPrivKey, ECPubJWK, ECPubKey, KID } from 'key';
-import { BASE64URL, BASE64URL_DECODE, CONCAT, UTF8 } from 'utility';
+import { BASE64URL, CONCAT, UTF8 } from 'utility';
 
 export type Seed = SeedDeriver & SeedNavigator;
 
@@ -9,23 +9,54 @@ export function newSeed(): Seed {
 }
 
 interface SeedDeriver {
+  /**
+   * 乱数とシードから Ownership Verification Key を導出する。
+   * @param r 乱数
+   * @returns Ownership Verification Public Key
+   */
   deriveOVK(r: Uint8Array): Promise<ECPubKey>;
-  macOVK(OVK: ECPubKey, svcID: string): Promise<Uint8Array>;
-  macOVK(r: Uint8Array, svcID: string): Promise<Uint8Array>;
-  verifyOVK(OVK: ECPubKey, svcID: string, MAC: Uint8Array): Promise<boolean>;
-  signOVK(r: Uint8Array, cred: Uint8Array): Promise<Uint8Array>;
-  signOVK(OVK: ECPubKey, cred: Uint8Array): Promise<Uint8Array>;
+  /**
+   * OVK を特定のサービスに対して生成したことを検証できる MAC を計算する。
+   * @param OVK  Ownership Verification Public Key でこれに対応する秘密鍵をシードは内部で識別できる。
+   * @param r OVK を導出する際に用いた乱数
+   * @param svcID 登録先のサービス識別子 (dns 名)
+   * @returns OVK の秘密鍵で (r || UTF8(svcID)) に対して計算した MAC
+   */
+  macOVK(OVK: ECPubKey, r: Uint8Array, svcID: string): Promise<Uint8Array>;
+  /**
+   * OVK がこのサービスのために他のデバイスで生成されたかを MAC を用いて検証する。
+   * @param OVK Ownership Verification Public Key でこれに対応する秘密鍵をシードは内部で識別できる。
+   * @param r OVK を導出するために用いた乱数
+   * @param svcID 登録先のサービス識別子 (dns 名)
+   * @param MAC サービスから取得した MAC
+   * @returns 検証に成功すれば true
+   */
+  verifyOVK(OVK: ECPubKey, r: Uint8Array, svcID: string, MAC: Uint8Array): Promise<boolean>;
+  /**
+   * OVK を用いてクレデンシャルに署名する。
+   * @param OVK OVPubK でこれに対応する秘密鍵をシードは内部で識別できる。
+   * @param r OVK を導出する際に用いた乱数
+   * @param cred OVPrivK が署名するクレデンシャル
+   * @returns OVK の秘密鍵で cred に対して計算した署名
+   */
+  signOVK(OVK: ECPubKey, r: Uint8Array, cred: Uint8Array): Promise<Uint8Array>;
 }
 
 interface SeedNavigator {
-  startKeyAgreement(): Promise<ECPubKey>;
+  startAgreement(update?: boolean): Promise<ECPubKey>;
   agree(received: ECPubKey): Promise<boolean>;
 }
 
 class SeedImple implements SeedDeriver, SeedNavigator {
   constructor(private seeds: { s?: Uint8Array; eprivk?: ECPrivKey }[] = []) {}
 
-  async startKeyAgreement(): Promise<ECPubKey> {
+  async startAgreement(update = false): Promise<ECPubKey> {
+    if (!update && this.seeds.length != 0) {
+      throw new EvalError('シードをすでに保持している');
+    }
+    if (update && this.seeds.length != 1) {
+      throw new EvalError('シードの更新を始められない');
+    }
     const sk_api = await window.crypto.subtle.generateKey(
       { name: 'ECDH', namedCurve: 'P-256' },
       true,
@@ -55,6 +86,7 @@ class SeedImple implements SeedDeriver, SeedNavigator {
       }
       const { s, eprivk } = pop;
       if (!eprivk || s) {
+        this.seeds.push(pop);
         throw new EvalError(`有効でないSeed の共有`);
       }
       const priv_api = await window.crypto.subtle.importKey(
@@ -100,13 +132,7 @@ class SeedImple implements SeedDeriver, SeedNavigator {
     return sk.toECPubKey();
   }
 
-  async macOVK(x: ECPubKey | Uint8Array, svcID: string): Promise<Uint8Array> {
-    let r: Uint8Array;
-    if (ECPubKey.is(x)) {
-      r = BASE64URL_DECODE(x.kid.kid);
-    } else {
-      r = x;
-    }
+  async macOVK(OVK: ECPubKey, r: Uint8Array, svcID: string): Promise<Uint8Array> {
     const sk = await this.OVK(r);
     const sk_api = await window.crypto.subtle.importKey(
       'raw',
@@ -119,8 +145,7 @@ class SeedImple implements SeedDeriver, SeedNavigator {
     return new Uint8Array(mac);
   }
 
-  async verifyOVK(OVK: ECPubKey, svcID: string, MAC: Uint8Array): Promise<boolean> {
-    const r = BASE64URL_DECODE(OVK.kid.kid);
+  async verifyOVK(OVK: ECPubKey, r: Uint8Array, svcID: string, MAC: Uint8Array): Promise<boolean> {
     const sk = await this.OVK(r);
     const sk_api = await window.crypto.subtle.importKey(
       'raw',
@@ -132,13 +157,7 @@ class SeedImple implements SeedDeriver, SeedNavigator {
     return await window.crypto.subtle.verify('HMAC', sk_api, MAC, CONCAT(r, UTF8(svcID)));
   }
 
-  async signOVK(x: ECPubKey | Uint8Array, cred: Uint8Array): Promise<Uint8Array> {
-    let r: Uint8Array;
-    if (ECPubKey.is(x)) {
-      r = BASE64URL_DECODE(x.kid.kid);
-    } else {
-      r = x;
-    }
+  async signOVK(OVK: ECPubKey, r: Uint8Array, cred: Uint8Array): Promise<Uint8Array> {
     const sk = await this.OVK(r);
     const sk_api = await window.crypto.subtle.importKey(
       'jwk',

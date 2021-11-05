@@ -8384,7 +8384,13 @@ class SeedImple {
     constructor(seeds = []) {
         this.seeds = seeds;
     }
-    async startKeyAgreement() {
+    async startAgreement(update = false) {
+        if (!update && this.seeds.length != 0) {
+            throw new EvalError('シードをすでに保持している');
+        }
+        if (update && this.seeds.length != 1) {
+            throw new EvalError('シードの更新を始められない');
+        }
         const sk_api = await window.crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
         if (!sk_api.publicKey || !sk_api.privateKey) {
             throw new TypeError('Extractive になっていない');
@@ -8403,6 +8409,7 @@ class SeedImple {
             }
             const { s, eprivk } = pop;
             if (!eprivk || s) {
+                this.seeds.push(pop);
                 throw new EvalError(`有効でないSeed の共有`);
             }
             const priv_api = await window.crypto.subtle.importKey('jwk', eprivk.toJWK(), { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveBits']);
@@ -8435,33 +8442,18 @@ class SeedImple {
         const sk = await this.OVK(r);
         return sk.toECPubKey();
     }
-    async macOVK(x, svcID) {
-        let r;
-        if (ECPubKey.is(x)) {
-            r = BASE64URL_DECODE(x.kid.kid);
-        }
-        else {
-            r = x;
-        }
+    async macOVK(OVK, r, svcID) {
         const sk = await this.OVK(r);
         const sk_api = await window.crypto.subtle.importKey('raw', sk.d('oct'), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
         const mac = await window.crypto.subtle.sign('HMAC', sk_api, CONCAT(r, UTF8(svcID)));
         return new Uint8Array(mac);
     }
-    async verifyOVK(OVK, svcID, MAC) {
-        const r = BASE64URL_DECODE(OVK.kid.kid);
+    async verifyOVK(OVK, r, svcID, MAC) {
         const sk = await this.OVK(r);
         const sk_api = await window.crypto.subtle.importKey('raw', sk.d('oct'), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
         return await window.crypto.subtle.verify('HMAC', sk_api, MAC, CONCAT(r, UTF8(svcID)));
     }
-    async signOVK(x, cred) {
-        let r;
-        if (ECPubKey.is(x)) {
-            r = BASE64URL_DECODE(x.kid.kid);
-        }
-        else {
-            r = x;
-        }
+    async signOVK(OVK, r, cred) {
         const sk = await this.OVK(r);
         const sk_api = await window.crypto.subtle.importKey('jwk', sk.toJWK(), { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
         const sig = await window.crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, sk_api, cred);
@@ -8509,14 +8501,14 @@ async function kdf(kdfkey, salt, length) {
     // DeviceA
     await (async () => {
         const seed = DeviceA.seed;
-        const dhkey = await seed.startKeyAgreement();
+        const dhkey = await seed.startAgreement();
         console.log('Device A でシードの共有を開始');
         DeviceB.epk = dhkey.toJWK();
     })();
     // DeviceB
     await (async () => {
         const seed = DeviceB.seed;
-        const dhkey = await seed.startKeyAgreement();
+        const dhkey = await seed.startAgreement();
         console.log('Device B でシードの共有を開始');
         DeviceA.epk = dhkey.toJWK();
     })();
@@ -8558,11 +8550,12 @@ async function kdf(kdfkey, salt, length) {
             const seed = DeviceA.seed;
             const r = window.crypto.getRandomValues(new Uint8Array(16));
             const ovk = await seed.deriveOVK(r);
-            const mac = await seed.macOVK(r, svcIDs[svc]);
-            const sig = await seed.signOVK(ovk, cred);
+            const mac = await seed.macOVK(ovk, r, svcIDs[svc]);
+            const sig = await seed.signOVK(ovk, r, cred);
             SvcDB[svc]['alice'] = {
                 ovk_jwk: ovk.toJWK(),
                 mac_b64u: BASE64URL(mac),
+                r_b64u: BASE64URL(r),
                 creds: [{ cred_utf8: UTF8_DECODE(cred), sig_b64u: BASE64URL(sig) }],
             };
         })();
@@ -8574,13 +8567,14 @@ async function kdf(kdfkey, salt, length) {
         await (async () => {
             const cred = UTF8(`Dummy Credential in DevB for ${svc}`);
             const seed = DeviceB.seed;
-            const { ovk_jwk, mac_b64u } = SvcDB[svc]['alice'];
+            const { ovk_jwk, r_b64u, mac_b64u } = SvcDB[svc]['alice'];
             const ovk = ECPubKey.fromJWK(ovk_jwk);
-            const isValid = await seed.verifyOVK(ovk, svcIDs[svc], BASE64URL_DECODE(mac_b64u));
+            const r = BASE64URL_DECODE(r_b64u);
+            const isValid = await seed.verifyOVK(ovk, r, svcIDs[svc], BASE64URL_DECODE(mac_b64u));
             if (!isValid) {
                 throw new EvalError(`seed.verifyOVK failed`);
             }
-            const sig = await seed.signOVK(ovk, cred);
+            const sig = await seed.signOVK(ovk, r, cred);
             SvcDB[svc]['alice'].creds.push({ cred_utf8: UTF8_DECODE(cred), sig_b64u: BASE64URL(sig) });
         })();
         // svc1.example
