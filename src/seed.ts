@@ -1,9 +1,11 @@
 import { ec } from 'elliptic';
 import { ECPirvJWK, ECPrivKey, ECPubJWK, ECPubKey, KID } from 'key';
-import { CONCAT, UTF8 } from 'utility';
+import { BASE64URL, BASE64URL_DECODE, CONCAT, UTF8 } from 'utility';
 
-export function newSeed(): SeedDeriver & SeedNavigator {
-  return new SeedImple([], UTF8('abcdefghijklmnop'));
+export type Seed = SeedDeriver & SeedNavigator;
+
+export function newSeed(): Seed {
+  return new SeedImple();
 }
 
 interface SeedDeriver {
@@ -21,7 +23,7 @@ interface SeedNavigator {
 }
 
 class SeedImple implements SeedDeriver, SeedNavigator {
-  constructor(private seeds: { s?: Uint8Array; eprivk?: ECPrivKey }[], private key: Uint8Array) {}
+  constructor(private seeds: { s?: Uint8Array; eprivk?: ECPrivKey }[] = []) {}
 
   async startKeyAgreement(): Promise<ECPubKey> {
     const sk_api = await window.crypto.subtle.generateKey(
@@ -88,7 +90,7 @@ class SeedImple implements SeedDeriver, SeedNavigator {
 
   private async OVK(r: Uint8Array): Promise<ECPrivKey> {
     const d = await kdf(this.seed, r, 256);
-    const kid = await KID.genKeyHandle(this.key, r);
+    const kid = new KID(BASE64URL(r));
     const pk = new ec('p256').keyFromPrivate(d);
     return ECPrivKey.fromECKeyPair(pk, kid);
   }
@@ -101,7 +103,7 @@ class SeedImple implements SeedDeriver, SeedNavigator {
   async macOVK(x: ECPubKey | Uint8Array, svcID: string): Promise<Uint8Array> {
     let r: Uint8Array;
     if (ECPubKey.is(x)) {
-      r = await x.kid.deriveSecret(this.key);
+      r = BASE64URL_DECODE(x.kid.kid);
     } else {
       r = x;
     }
@@ -118,7 +120,7 @@ class SeedImple implements SeedDeriver, SeedNavigator {
   }
 
   async verifyOVK(OVK: ECPubKey, svcID: string, MAC: Uint8Array): Promise<boolean> {
-    const r = await OVK.kid.deriveSecret(this.key);
+    const r = BASE64URL_DECODE(OVK.kid.kid);
     const sk = await this.OVK(r);
     const sk_api = await window.crypto.subtle.importKey(
       'raw',
@@ -133,7 +135,7 @@ class SeedImple implements SeedDeriver, SeedNavigator {
   async signOVK(x: ECPubKey | Uint8Array, cred: Uint8Array): Promise<Uint8Array> {
     let r: Uint8Array;
     if (ECPubKey.is(x)) {
-      r = await x.kid.deriveSecret(this.key);
+      r = BASE64URL_DECODE(x.kid.kid);
     } else {
       r = x;
     }

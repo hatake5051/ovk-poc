@@ -1,5 +1,220 @@
 'use strict';
 
+/**
+ * 文字列を UTF8 バイトエンコードする。(string to Uint8Array)
+ */
+function UTF8(STRING) {
+    const encoder = new TextEncoder();
+    return encoder.encode(STRING);
+}
+/**
+ * 文字列に UTF8 バイトデコードする (Uint8Array to string)
+ */
+function UTF8_DECODE(OCTETS) {
+    const decoder = new TextDecoder();
+    return decoder.decode(OCTETS);
+}
+/**
+ * バイト列を BASE64URL エンコードする (Uint8Array to string)
+ */
+function BASE64URL(OCTETS) {
+    // window 組み込みの base64 encode 関数
+    // 組み込みの関数は引数としてバイナリ文字列を要求するため
+    // Uint8Array をバイナリ文字列へと変換する
+    const b_str = String.fromCharCode(...OCTETS);
+    const base64_encode = window.btoa(b_str);
+    return (base64_encode
+        // 文字「+」は全て「-」へ変換する
+        .replaceAll('+', '-')
+        // 文字「/」は全て「_」へ変換する
+        .replaceAll('/', '_')
+        // 4の倍数にするためのパディング文字は全て消去
+        .replaceAll('=', ''));
+}
+/**
+ * バイト列に BASE64URL デコードする (string to Uint8Array)
+ */
+function BASE64URL_DECODE(STRING) {
+    const url_decode = STRING
+        // URL-safe にするために変換した文字たちを戻す
+        .replaceAll('-', '+')
+        .replaceAll('_', '/')
+        // 文字列長が4の倍数になるように padding文字で埋める
+        .padEnd(Math.ceil(STRING.length / 4) * 4, '=');
+    // window 組み込みの base64 decode 関数
+    // この関数はデコードの結果をバイナリ文字列として出力する
+    const b_str = window.atob(url_decode);
+    // バイナリ文字列を Uint8Array に変換する
+    const b = new Uint8Array(b_str.length);
+    for (let i = 0; i < b_str.length; i++) {
+        b[i] = b_str.charCodeAt(i);
+    }
+    return b;
+}
+function HexStr2Uint8Array(hexstr) {
+    const ans_str = hexstr.length % 2 === 0 ? hexstr : '0' + hexstr;
+    const ans_length = ans_str.length / 2;
+    const ans = new Uint8Array(ans_length);
+    for (let i = 0; i < ans_length; i++) {
+        ans[i] = parseInt(ans_str.substr(i * 2, 2), 16);
+    }
+    return ans;
+}
+/**
+ * ２つのバイト列を結合する
+ */
+function CONCAT(A, B) {
+    const ans = new Uint8Array(A.length + B.length);
+    ans.set(A);
+    ans.set(B, A.length);
+    return ans;
+}
+
+class KID {
+    constructor(kid) {
+        this.kid = kid;
+    }
+    static async genKeyHandle(key, secret) {
+        const encKey = await window.crypto.subtle.importKey('raw', key, 'AES-GCM', false, ['encrypt']);
+        const iv = window.crypto.getRandomValues(new Uint8Array(12));
+        const enc = await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, encKey, secret);
+        return new KID(BASE64URL(iv) + '.' + BASE64URL(new Uint8Array(enc)));
+    }
+    async deriveSecret(key) {
+        const decKey = await window.crypto.subtle.importKey('raw', key, 'AES-GCM', false, ['decrypt']);
+        const kid_splited = this.kid.split('.');
+        if (kid_splited.length !== 2) {
+            throw new TypeError('Invalid KID');
+        }
+        const [iv_b64, ctext_b64] = kid_splited;
+        let dec;
+        try {
+            dec = await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv: BASE64URL_DECODE(iv_b64) }, decKey, BASE64URL_DECODE(ctext_b64));
+        }
+        catch {
+            throw new EvalError(`Invalid KID`);
+        }
+        return new Uint8Array(dec);
+    }
+}
+class ECPubKey {
+    constructor(kid, _x, _y) {
+        this.kid = kid;
+        this._x = _x;
+        this._y = _y;
+    }
+    get kty() {
+        return 'EC';
+    }
+    get crv() {
+        return 'P-256';
+    }
+    x(format) {
+        switch (format) {
+            case 'b64u':
+                return BASE64URL(this._x);
+            case 'oct':
+                return this._x;
+        }
+    }
+    y(format) {
+        switch (format) {
+            case 'b64u':
+                return BASE64URL(this._y);
+            case 'oct':
+                return this._y;
+        }
+    }
+    static fromPrivKey(pk) {
+        return new ECPubKey(pk.kid, pk.x('oct'), pk.y('oct'));
+    }
+    static fromJWK(jwk) {
+        return new ECPubKey(new KID(jwk.kid), BASE64URL_DECODE(jwk.x), BASE64URL_DECODE(jwk.y));
+    }
+    static is(arg) {
+        return arg instanceof ECPubKey;
+    }
+    toJWK() {
+        return {
+            kty: this.kty,
+            kid: this.kid.kid,
+            crv: this.crv,
+            x: this.x('b64u'),
+            y: this.y('b64u'),
+        };
+    }
+    toString() {
+        return JSON.stringify(this.toJWK());
+    }
+}
+class ECPrivKey {
+    constructor(kid, _x, _y, _d) {
+        this.kid = kid;
+        this._x = _x;
+        this._y = _y;
+        this._d = _d;
+    }
+    get kty() {
+        return 'EC';
+    }
+    get crv() {
+        return 'P-256';
+    }
+    x(format) {
+        switch (format) {
+            case 'b64u':
+                return BASE64URL(this._x);
+            case 'oct':
+                return this._x;
+        }
+    }
+    y(format) {
+        switch (format) {
+            case 'b64u':
+                return BASE64URL(this._y);
+            case 'oct':
+                return this._y;
+        }
+    }
+    d(format) {
+        switch (format) {
+            case 'b64u':
+                return BASE64URL(this._d);
+            case 'oct':
+                return this._d;
+        }
+    }
+    static fromPubKeyWithSecret(pk, d) {
+        return new ECPrivKey(pk.kid, pk.x('oct'), pk.y('oct'), d);
+    }
+    static fromECKeyPair(pk, kid) {
+        const d_bytes = HexStr2Uint8Array(pk.getPrivate('hex'));
+        const xy_hexstr = pk.getPublic('hex');
+        if (!xy_hexstr.startsWith('04')) {
+            throw new TypeError(`Cannot convert to JWK`);
+        }
+        const x_bytes = HexStr2Uint8Array(xy_hexstr.slice(2, 32 * 2 + 2));
+        const y_bytes = HexStr2Uint8Array(xy_hexstr.slice(32 * 2 + 2));
+        return new ECPrivKey(kid, x_bytes, y_bytes, d_bytes);
+    }
+    static fromJWK(jwk) {
+        return new ECPrivKey(new KID(jwk.kid), BASE64URL_DECODE(jwk.x), BASE64URL_DECODE(jwk.y), BASE64URL_DECODE(jwk.d));
+    }
+    toECPubKey() {
+        return ECPubKey.fromPrivKey(this);
+    }
+    toJWK() {
+        return {
+            kty: this.kty,
+            kid: this.kid.kid,
+            crv: this.crv,
+            x: this.x('b64u'),
+            y: this.y('b64u'),
+            d: this.d('b64u'),
+        };
+    }
+}
+
 var commonjsGlobal = typeof globalThis !== 'undefined' ? globalThis : typeof window !== 'undefined' ? window : typeof global !== 'undefined' ? global : typeof self !== 'undefined' ? self : {};
 
 var elliptic = {};
@@ -8162,221 +8377,12 @@ elliptic.ec = ec;
 elliptic.eddsa = eddsa;
 }(elliptic));
 
-/**
- * 文字列を UTF8 バイトエンコードする。(string to Uint8Array)
- */
-function UTF8(STRING) {
-    const encoder = new TextEncoder();
-    return encoder.encode(STRING);
-}
-/**
- * バイト列を BASE64URL エンコードする (Uint8Array to string)
- */
-function BASE64URL(OCTETS) {
-    // window 組み込みの base64 encode 関数
-    // 組み込みの関数は引数としてバイナリ文字列を要求するため
-    // Uint8Array をバイナリ文字列へと変換する
-    const b_str = String.fromCharCode(...OCTETS);
-    const base64_encode = window.btoa(b_str);
-    return (base64_encode
-        // 文字「+」は全て「-」へ変換する
-        .replaceAll('+', '-')
-        // 文字「/」は全て「_」へ変換する
-        .replaceAll('/', '_')
-        // 4の倍数にするためのパディング文字は全て消去
-        .replaceAll('=', ''));
-}
-/**
- * バイト列に BASE64URL デコードする (string to Uint8Array)
- */
-function BASE64URL_DECODE(STRING) {
-    const url_decode = STRING
-        // URL-safe にするために変換した文字たちを戻す
-        .replaceAll('-', '+')
-        .replaceAll('_', '/')
-        // 文字列長が4の倍数になるように padding文字で埋める
-        .padEnd(Math.ceil(STRING.length / 4) * 4, '=');
-    // window 組み込みの base64 decode 関数
-    // この関数はデコードの結果をバイナリ文字列として出力する
-    const b_str = window.atob(url_decode);
-    // バイナリ文字列を Uint8Array に変換する
-    const b = new Uint8Array(b_str.length);
-    for (let i = 0; i < b_str.length; i++) {
-        b[i] = b_str.charCodeAt(i);
-    }
-    return b;
-}
-function HexStr2Uint8Array(hexstr) {
-    const ans_str = hexstr.length % 2 === 0 ? hexstr : '0' + hexstr;
-    const ans_length = ans_str.length / 2;
-    const ans = new Uint8Array(ans_length);
-    for (let i = 0; i < ans_length; i++) {
-        ans[i] = parseInt(ans_str.substr(i * 2, 2), 16);
-    }
-    return ans;
-}
-/**
- * ２つのバイト列を結合する
- */
-function CONCAT(A, B) {
-    const ans = new Uint8Array(A.length + B.length);
-    ans.set(A);
-    ans.set(B, A.length);
-    return ans;
-}
-
-class KID {
-    constructor(kid) {
-        this.kid = kid;
-    }
-    static async genKeyHandle(key, secret) {
-        const encKey = await window.crypto.subtle.importKey('raw', key, 'AES-GCM', false, ['encrypt']);
-        const iv = window.crypto.getRandomValues(new Uint8Array(12));
-        const enc = await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, encKey, secret);
-        return new KID(BASE64URL(iv) + '.' + BASE64URL(new Uint8Array(enc)));
-    }
-    async deriveSecret(key) {
-        const decKey = await window.crypto.subtle.importKey('raw', key, 'AES-GCM', false, ['decrypt']);
-        const kid_splited = this.kid.split('.');
-        if (kid_splited.length !== 2) {
-            throw new TypeError('Invalid KID');
-        }
-        const [iv_b64, ctext_b64] = kid_splited;
-        let dec;
-        try {
-            dec = await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv: BASE64URL_DECODE(iv_b64) }, decKey, BASE64URL_DECODE(ctext_b64));
-        }
-        catch {
-            throw new EvalError(`Invalid KID`);
-        }
-        return new Uint8Array(dec);
-    }
-}
-class ECPubKey {
-    constructor(kid, _x, _y) {
-        this.kid = kid;
-        this._x = _x;
-        this._y = _y;
-    }
-    get kty() {
-        return 'EC';
-    }
-    get crv() {
-        return 'P-256';
-    }
-    x(format) {
-        switch (format) {
-            case 'b64u':
-                return BASE64URL(this._x);
-            case 'oct':
-                return this._x;
-        }
-    }
-    y(format) {
-        switch (format) {
-            case 'b64u':
-                return BASE64URL(this._y);
-            case 'oct':
-                return this._y;
-        }
-    }
-    static fromPrivKey(pk) {
-        return new ECPubKey(pk.kid, pk.x('oct'), pk.y('oct'));
-    }
-    static fromJWK(jwk) {
-        return new ECPubKey(new KID(jwk.kid), BASE64URL_DECODE(jwk.x), BASE64URL_DECODE(jwk.y));
-    }
-    static is(arg) {
-        return arg instanceof ECPubKey;
-    }
-    toJWK() {
-        return {
-            kty: this.kty,
-            kid: this.kid.kid,
-            crv: this.crv,
-            x: this.x('b64u'),
-            y: this.y('b64u'),
-        };
-    }
-    toString() {
-        return JSON.stringify(this.toJWK());
-    }
-}
-class ECPrivKey {
-    constructor(kid, _x, _y, _d) {
-        this.kid = kid;
-        this._x = _x;
-        this._y = _y;
-        this._d = _d;
-    }
-    get kty() {
-        return 'EC';
-    }
-    get crv() {
-        return 'P-256';
-    }
-    x(format) {
-        switch (format) {
-            case 'b64u':
-                return BASE64URL(this._x);
-            case 'oct':
-                return this._x;
-        }
-    }
-    y(format) {
-        switch (format) {
-            case 'b64u':
-                return BASE64URL(this._y);
-            case 'oct':
-                return this._y;
-        }
-    }
-    d(format) {
-        switch (format) {
-            case 'b64u':
-                return BASE64URL(this._d);
-            case 'oct':
-                return this._d;
-        }
-    }
-    static fromPubKeyWithSecret(pk, d) {
-        return new ECPrivKey(pk.kid, pk.x('oct'), pk.y('oct'), d);
-    }
-    static fromECKeyPair(pk, kid) {
-        const d_bytes = HexStr2Uint8Array(pk.getPrivate('hex'));
-        const xy_hexstr = pk.getPublic('hex');
-        if (!xy_hexstr.startsWith('04')) {
-            throw new TypeError(`Cannot convert to JWK`);
-        }
-        const x_bytes = HexStr2Uint8Array(xy_hexstr.slice(2, 32 * 2 + 2));
-        const y_bytes = HexStr2Uint8Array(xy_hexstr.slice(32 * 2 + 2));
-        return new ECPrivKey(kid, x_bytes, y_bytes, d_bytes);
-    }
-    static fromJWK(jwk) {
-        return new ECPrivKey(new KID(jwk.kid), BASE64URL_DECODE(jwk.x), BASE64URL_DECODE(jwk.y), BASE64URL_DECODE(jwk.d));
-    }
-    toECPubKey() {
-        return ECPubKey.fromPrivKey(this);
-    }
-    toJWK() {
-        return {
-            kty: this.kty,
-            kid: this.kid.kid,
-            crv: this.crv,
-            x: this.x('b64u'),
-            y: this.y('b64u'),
-            d: this.d('b64u'),
-        };
-    }
-}
-
 function newSeed() {
-    return new SeedImple([], UTF8('abcdefghijklmnop'));
+    return new SeedImple();
 }
 class SeedImple {
-    constructor(seeds, key) {
+    constructor(seeds = []) {
         this.seeds = seeds;
-        this.key = key;
     }
     async startKeyAgreement() {
         const sk_api = await window.crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
@@ -8421,7 +8427,7 @@ class SeedImple {
     }
     async OVK(r) {
         const d = await kdf(this.seed, r, 256);
-        const kid = await KID.genKeyHandle(this.key, r);
+        const kid = new KID(BASE64URL(r));
         const pk = new elliptic.ec('p256').keyFromPrivate(d);
         return ECPrivKey.fromECKeyPair(pk, kid);
     }
@@ -8432,7 +8438,7 @@ class SeedImple {
     async macOVK(x, svcID) {
         let r;
         if (ECPubKey.is(x)) {
-            r = await x.kid.deriveSecret(this.key);
+            r = BASE64URL_DECODE(x.kid.kid);
         }
         else {
             r = x;
@@ -8443,7 +8449,7 @@ class SeedImple {
         return new Uint8Array(mac);
     }
     async verifyOVK(OVK, svcID, MAC) {
-        const r = await OVK.kid.deriveSecret(this.key);
+        const r = BASE64URL_DECODE(OVK.kid.kid);
         const sk = await this.OVK(r);
         const sk_api = await window.crypto.subtle.importKey('raw', sk.d('oct'), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
         return await window.crypto.subtle.verify('HMAC', sk_api, MAC, CONCAT(r, UTF8(svcID)));
@@ -8451,7 +8457,7 @@ class SeedImple {
     async signOVK(x, cred) {
         let r;
         if (ECPubKey.is(x)) {
-            r = await x.kid.deriveSecret(this.key);
+            r = BASE64URL_DECODE(x.kid.kid);
         }
         else {
             r = x;
@@ -8469,78 +8475,136 @@ async function kdf(kdfkey, salt, length) {
 }
 
 (async () => {
-    const svcID = 'auth.example.com';
-    console.log('デバイス間でシードの共有を始めます。');
-    const seedA = newSeed();
+    const svcIDs = {
+        svc1: 'svc1.example',
+        svc2: 'svc2.example',
+        svc3: 'svc3.example',
+        svc4: 'svc4.example',
+        svc5: 'svc5.example',
+        svc6: 'svc6.example',
+        svc7: 'svc7.example',
+        svc8: 'svc8.example',
+        svc9: 'svc9.example',
+        svc10: 'svc10.example',
+    };
+    const DeviceA = {
+        seed: newSeed(),
+    };
+    const DeviceB = {
+        seed: newSeed(),
+    };
+    const SvcDB = {
+        svc1: {},
+        svc2: {},
+        svc3: {},
+        svc4: {},
+        svc5: {},
+        svc6: {},
+        svc7: {},
+        svc8: {},
+        svc9: {},
+        svc10: {},
+    };
+    console.group('シードの共有 between Device A and Device B');
     // DeviceA
-    const dhkeyA = await (async () => {
-        const seed = seedA;
+    await (async () => {
+        const seed = DeviceA.seed;
         const dhkey = await seed.startKeyAgreement();
-        return dhkey;
+        console.log('Device A でシードの共有を開始');
+        DeviceB.epk = dhkey.toJWK();
     })();
-    const seedB = newSeed();
     // DeviceB
-    const dhkeyB = await (async () => {
-        const seed = seedB;
+    await (async () => {
+        const seed = DeviceB.seed;
         const dhkey = await seed.startKeyAgreement();
-        return dhkey;
+        console.log('Device B でシードの共有を開始');
+        DeviceA.epk = dhkey.toJWK();
     })();
+    console.log('DH公開鍵をやりとり between Device A and B');
     // DeviceA
-    await (async (dhkey) => {
-        const seed = seedA;
-        const isSucceeded = await seed.agree(dhkey);
+    await (async () => {
+        const seed = DeviceA.seed;
+        if (!DeviceA.epk) {
+            throw new EvalError(`Epheral PubKey が届いていない`);
+        }
+        const isSucceeded = await seed.agree(ECPubKey.fromJWK(DeviceA.epk));
         if (isSucceeded) {
-            console.log('デバイスA は デバイス B とのシード共有に成功');
+            console.log('Device A は Device B とのシード共有に成功');
         }
         else {
             throw new EvalError(`ネゴ失敗`);
         }
-    })(dhkeyB);
+    })();
     // DeviceB
-    await (async (dhkey) => {
-        const seed = seedB;
-        const isSucceeded = await seed.agree(dhkey);
+    await (async () => {
+        const seed = DeviceB.seed;
+        if (!DeviceB.epk) {
+            throw new EvalError(`Epheral PubKey が届いていない`);
+        }
+        const isSucceeded = await seed.agree(ECPubKey.fromJWK(DeviceB.epk));
         if (isSucceeded) {
-            console.log('デバイスB は デバイス A とのシード共有に成功');
+            console.log('Device B は Device A とのシード共有に成功');
         }
         else {
             throw new EvalError(`ネゴ失敗`);
         }
-    })(dhkeyA);
-    //  DeviceA
-    console.log('デバイスAでサービスに登録する');
-    const { ovk, mac } = await (async () => {
-        const seed = seedA;
-        const r = UTF8('ABCDEFGHIJKL');
-        const ovk = await seed.deriveOVK(r);
-        const mac = await seed.macOVK(r, svcID);
-        return { ovk, mac };
     })();
-    // auth.example.com
-    console.log('サービスは Ownership Verification Key を保存する');
-    const authSvcDB = { ovk };
-    // DeviceB
-    console.log('デバイスBでサービスに登録する');
-    const { cred, sig } = await (async (ovk, mac) => {
-        const seed = seedB;
-        const isValid = await seed.verifyOVK(ovk, svcID, mac);
-        if (!isValid) {
-            throw new EvalError(`seed.verifyOVK failed`);
-        }
-        const cred = UTF8('Dummy Credential');
-        const sig = await seed.signOVK(ovk, cred);
-        return { cred, sig };
-    })(ovk, mac);
-    // auth.example.com
-    console.log('サービスはクレデンシャルの検証を OVK を使って行う');
-    await (async (cred, sig) => {
-        const pk_api = await window.crypto.subtle.importKey('jwk', authSvcDB.ovk.toJWK(), { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
-        const isValid = await window.crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, pk_api, sig, cred);
-        if (isValid) {
-            console.log('サービスはデバイスB のクレデンシャル がデバイスA の OVK で検証できた');
-        }
-        else {
-            console.log('失敗');
-        }
-    })(cred, sig);
+    console.groupEnd();
+    for (const svc in svcIDs) {
+        console.group(`アカウント新規登録 @ Device A to ${svc}`);
+        //  DeviceA
+        await (async () => {
+            const cred = UTF8(`Dummy Credential in DevA for ${svc}`);
+            const seed = DeviceA.seed;
+            const r = window.crypto.getRandomValues(new Uint8Array(16));
+            const ovk = await seed.deriveOVK(r);
+            const mac = await seed.macOVK(r, svcIDs[svc]);
+            const sig = await seed.signOVK(ovk, cred);
+            SvcDB[svc]['alice'] = {
+                ovk_jwk: ovk.toJWK(),
+                mac_b64u: BASE64URL(mac),
+                creds: [{ cred_utf8: UTF8_DECODE(cred), sig_b64u: BASE64URL(sig) }],
+            };
+        })();
+        // svc1.example
+        console.log(`${svc} は Credential と Ownership Verification Key を保存する`);
+        console.groupEnd();
+        console.group(`クレデンシャルのシームレスな登録 @ Device B to ${svc}`);
+        // DeviceB
+        await (async () => {
+            const cred = UTF8(`Dummy Credential in DevB for ${svc}`);
+            const seed = DeviceB.seed;
+            const { ovk_jwk, mac_b64u } = SvcDB[svc]['alice'];
+            const ovk = ECPubKey.fromJWK(ovk_jwk);
+            const isValid = await seed.verifyOVK(ovk, svcIDs[svc], BASE64URL_DECODE(mac_b64u));
+            if (!isValid) {
+                throw new EvalError(`seed.verifyOVK failed`);
+            }
+            const sig = await seed.signOVK(ovk, cred);
+            SvcDB[svc]['alice'].creds.push({ cred_utf8: UTF8_DECODE(cred), sig_b64u: BASE64URL(sig) });
+        })();
+        // svc1.example
+        console.log(`${svc} はクレデンシャルの検証を OVK を使って行う`);
+        await (async () => {
+            const { ovk_jwk, creds } = SvcDB[svc]['alice'];
+            const pk_api = await window.crypto.subtle.importKey('jwk', ovk_jwk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+            const { cred_utf8, sig_b64u } = creds[creds.length - 1];
+            const isValid = await window.crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, pk_api, BASE64URL_DECODE(sig_b64u), UTF8(cred_utf8));
+            if (isValid) {
+                console.log(`${svc} はデバイスB のクレデンシャル がデバイスA の OVK で検証できた`);
+            }
+            else {
+                console.log('失敗');
+            }
+        })();
+        console.log(`${svc} は Credential と Ownership Verification Key を保存する`);
+        console.groupEnd();
+    }
+    console.log('デバイスA', DeviceA);
+    console.log('デバイスB', DeviceB);
+    console.log('サービス', SvcDB);
+    for (const svc in SvcDB) {
+        const db = SvcDB[svc]['alice'];
+        console.log(db.ovk_jwk, db.creds.map((e) => e.cred_utf8));
+    }
 })();

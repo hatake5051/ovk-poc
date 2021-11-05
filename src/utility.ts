@@ -7,6 +7,14 @@ export function UTF8(STRING: string): Uint8Array {
 }
 
 /**
+ * 文字列に UTF8 バイトデコードする (Uint8Array to string)
+ */
+export function UTF8_DECODE(OCTETS: Uint8Array): string {
+  const decoder = new TextDecoder();
+  return decoder.decode(OCTETS);
+}
+
+/**
  * バイト列を BASE64URL エンコードする (Uint8Array to string)
  */
 export function BASE64URL(OCTETS: Uint8Array): string {
