@@ -55,8 +55,11 @@ export function BASE64URL_DECODE(STRING: string) {
   return b;
 }
 
-export function HexStr2Uint8Array(hexstr: string): Uint8Array {
-  const ans_str = hexstr.length % 2 === 0 ? hexstr : '0' + hexstr;
+export function HexStr2Uint8Array(hexstr: string, len: number): Uint8Array {
+  let ans_str = hexstr;
+  if (hexstr.length < len * 2) {
+    ans_str = '0'.repeat(len * 2 - hexstr.length) + hexstr;
+  }
   const ans_length = ans_str.length / 2;
   const ans = new Uint8Array(ans_length);
   for (let i = 0; i < ans_length; i++) {

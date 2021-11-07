@@ -1,44 +1,33 @@
 import { ec } from 'elliptic';
-import { BASE64URL, BASE64URL_DECODE, HexStr2Uint8Array } from 'utility';
-
-export class KID {
-  constructor(public kid: string) {}
-
-  static async genKeyHandle(key: Uint8Array, secret: Uint8Array): Promise<KID> {
-    const encKey = await window.crypto.subtle.importKey('raw', key, 'AES-GCM', false, ['encrypt']);
-    const iv = window.crypto.getRandomValues(new Uint8Array(12));
-    const enc = await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, encKey, secret);
-    return new KID(BASE64URL(iv) + '.' + BASE64URL(new Uint8Array(enc)));
-  }
-
-  async deriveSecret(key: Uint8Array): Promise<Uint8Array> {
-    const decKey = await window.crypto.subtle.importKey('raw', key, 'AES-GCM', false, ['decrypt']);
-    const kid_splited = this.kid.split('.');
-    if (kid_splited.length !== 2) {
-      throw new TypeError('Invalid KID');
-    }
-    const [iv_b64, ctext_b64] = kid_splited;
-    let dec: ArrayBuffer;
-    try {
-      dec = await window.crypto.subtle.decrypt(
-        { name: 'AES-GCM', iv: BASE64URL_DECODE(iv_b64) },
-        decKey,
-        BASE64URL_DECODE(ctext_b64)
-      );
-    } catch {
-      throw new EvalError(`Invalid KID`);
-    }
-    return new Uint8Array(dec);
-  }
-}
+import { BASE64URL, BASE64URL_DECODE, HexStr2Uint8Array, UTF8 } from 'utility';
 
 export type ECPubJWK = { kty: 'EC'; kid: string; crv: string; x: string; y: string };
 
+export function equalECPubJWK(l?: ECPubJWK, r?: ECPubJWK): boolean {
+  if (!l && !r) return true;
+  if (!l || !r) return false;
+  return l.kid === r.kid && l.crv === r.crv && l.x === r.x && l.y === r.y;
+}
+
 export class ECPubKey {
-  private constructor(public kid: KID, private _x: Uint8Array, private _y: Uint8Array) {}
+  private constructor(private _x: Uint8Array, private _y: Uint8Array, private _kid?: string) {}
 
   get kty(): 'EC' {
     return 'EC';
+  }
+
+  async kid(): Promise<string> {
+    if (this._kid) {
+      return this._kid;
+    }
+    const json = JSON.stringify({
+      crv: this.crv,
+      kty: this.kty,
+      x: this.x('b64u'),
+      y: this.y('b64u'),
+    });
+    const dgst = await window.crypto.subtle.digest('SHA-256', UTF8(json));
+    return BASE64URL(new Uint8Array(dgst));
   }
 
   get crv(): 'P-256' {
@@ -67,22 +56,22 @@ export class ECPubKey {
     }
   }
 
-  static fromPrivKey(pk: ECPrivKey): ECPubKey {
-    return new ECPubKey(pk.kid, pk.x('oct'), pk.y('oct'));
+  static async fromPrivKey(pk: ECPrivKey): Promise<ECPubKey> {
+    return new ECPubKey(pk.x('oct'), pk.y('oct'), await pk.kid());
   }
 
   static fromJWK(jwk: ECPubJWK): ECPubKey {
-    return new ECPubKey(new KID(jwk.kid), BASE64URL_DECODE(jwk.x), BASE64URL_DECODE(jwk.y));
+    return new ECPubKey(BASE64URL_DECODE(jwk.x), BASE64URL_DECODE(jwk.y), jwk.kid);
   }
 
   static is(arg: unknown): arg is ECPubKey {
     return arg instanceof ECPubKey;
   }
 
-  toJWK(): ECPubJWK {
+  async toJWK(): Promise<ECPubJWK> {
     return {
       kty: this.kty,
-      kid: this.kid.kid,
+      kid: await this.kid(),
       crv: this.crv,
       x: this.x('b64u'),
       y: this.y('b64u'),
@@ -98,10 +87,10 @@ export type ECPirvJWK = { kty: 'EC'; kid: string; crv: string; x: string; y: str
 
 export class ECPrivKey {
   private constructor(
-    public kid: KID,
     private _x: Uint8Array,
     private _y: Uint8Array,
-    private _d: Uint8Array
+    private _d: Uint8Array,
+    private _kid?: string
   ) {}
 
   get kty(): 'EC' {
@@ -110,6 +99,20 @@ export class ECPrivKey {
 
   get crv(): 'P-256' {
     return 'P-256';
+  }
+
+  async kid(): Promise<string> {
+    if (this._kid) {
+      return this._kid;
+    }
+    const json = JSON.stringify({
+      crv: this.crv,
+      kty: this.kty,
+      x: this.x('b64u'),
+      y: this.y('b64u'),
+    });
+    const dgst = await window.crypto.subtle.digest('SHA-256', UTF8(json));
+    return BASE64URL(new Uint8Array(dgst));
   }
 
   x(format: 'b64u'): string;
@@ -145,38 +148,38 @@ export class ECPrivKey {
     }
   }
 
-  static fromPubKeyWithSecret(pk: ECPubKey, d: Uint8Array): ECPrivKey {
-    return new ECPrivKey(pk.kid, pk.x('oct'), pk.y('oct'), d);
+  static async fromPubKeyWithSecret(pk: ECPubKey, d: Uint8Array): Promise<ECPrivKey> {
+    return new ECPrivKey(pk.x('oct'), pk.y('oct'), d, await pk.kid());
   }
 
-  static fromECKeyPair(pk: ec.KeyPair, kid: KID): ECPrivKey {
-    const d_bytes = HexStr2Uint8Array(pk.getPrivate('hex'));
+  static fromECKeyPair(pk: ec.KeyPair, kid?: string): ECPrivKey {
+    const d_bytes = HexStr2Uint8Array(pk.getPrivate('hex'), 32);
     const xy_hexstr = pk.getPublic('hex');
     if (!xy_hexstr.startsWith('04')) {
       throw new TypeError(`Cannot convert to JWK`);
     }
-    const x_bytes = HexStr2Uint8Array(xy_hexstr.slice(2, 32 * 2 + 2));
-    const y_bytes = HexStr2Uint8Array(xy_hexstr.slice(32 * 2 + 2));
-    return new ECPrivKey(kid, x_bytes, y_bytes, d_bytes);
+    const x_bytes = HexStr2Uint8Array(xy_hexstr.slice(2, 32 * 2 + 2), 32);
+    const y_bytes = HexStr2Uint8Array(xy_hexstr.slice(32 * 2 + 2), 32);
+    return new ECPrivKey(x_bytes, y_bytes, d_bytes, kid);
   }
 
   static fromJWK(jwk: ECPirvJWK): ECPrivKey {
     return new ECPrivKey(
-      new KID(jwk.kid),
       BASE64URL_DECODE(jwk.x),
       BASE64URL_DECODE(jwk.y),
-      BASE64URL_DECODE(jwk.d)
+      BASE64URL_DECODE(jwk.d),
+      jwk.kid
     );
   }
 
-  toECPubKey(): ECPubKey {
+  async toECPubKey(): Promise<ECPubKey> {
     return ECPubKey.fromPrivKey(this);
   }
 
-  toJWK(): ECPirvJWK {
+  async toJWK(): Promise<ECPirvJWK> {
     return {
       kty: this.kty,
-      kid: this.kid.kid,
+      kid: await this.kid(),
       crv: this.crv,
       x: this.x('b64u'),
       y: this.y('b64u'),

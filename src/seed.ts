@@ -1,8 +1,8 @@
 import { ec } from 'elliptic';
-import { ECPirvJWK, ECPrivKey, ECPubJWK, ECPubKey, KID } from 'key';
-import { BASE64URL, CONCAT, UTF8 } from 'utility';
+import { ECPirvJWK, ECPrivKey, ECPubJWK, ECPubKey } from 'key';
+import { CONCAT, UTF8 } from 'utility';
 
-export type Seed = SeedDeriver & SeedNavigator;
+export type Seed = SeedDeriver & SeedNavigator & SeedUpdater;
 
 export function newSeed(): Seed {
   return new SeedImple();
@@ -47,7 +47,12 @@ interface SeedNavigator {
   agree(received: ECPubKey): Promise<boolean>;
 }
 
-class SeedImple implements SeedDeriver, SeedNavigator {
+interface SeedUpdater {
+  isUpdating(): Promise<boolean>;
+  update(prevR: Uint8Array, nextOVK: ECPubKey): Promise<Uint8Array>;
+}
+
+class SeedImple implements SeedDeriver, SeedNavigator, SeedUpdater {
   constructor(private seeds: { s?: Uint8Array; eprivk?: ECPrivKey }[] = []) {}
 
   async startAgreement(update = false): Promise<ECPubKey> {
@@ -75,7 +80,7 @@ class SeedImple implements SeedDeriver, SeedNavigator {
     try {
       const pub_api = await window.crypto.subtle.importKey(
         'jwk',
-        received.toJWK(),
+        await received.toJWK(),
         { name: 'ECDH', namedCurve: 'P-256' },
         false,
         []
@@ -91,7 +96,7 @@ class SeedImple implements SeedDeriver, SeedNavigator {
       }
       const priv_api = await window.crypto.subtle.importKey(
         'jwk',
-        eprivk.toJWK(),
+        await eprivk.toJWK(),
         { name: 'ECDH', namedCurve: 'P-256' },
         false,
         ['deriveBits']
@@ -110,21 +115,20 @@ class SeedImple implements SeedDeriver, SeedNavigator {
   }
 
   private get seed(): Uint8Array {
-    if (this.seeds.length != 1) {
-      throw new RangeError('Seed を一意に識別できなかった');
+    if (this.seeds.length == 0) {
+      throw new EvalError(`Seed を保有していない`);
     }
-    const { s } = this.seeds[0];
+    const { s } = this.seeds[this.seeds.length - 1];
     if (!s) {
       throw new EvalError(`Seed が有効でない`);
     }
     return s;
   }
 
-  private async OVK(r: Uint8Array): Promise<ECPrivKey> {
-    const d = await kdf(this.seed, r, 256);
-    const kid = new KID(BASE64URL(r));
+  private async OVK(r: Uint8Array, s?: Uint8Array): Promise<ECPrivKey> {
+    const d = await kdf(s ?? this.seed, r, 256);
     const pk = new ec('p256').keyFromPrivate(d);
-    return ECPrivKey.fromECKeyPair(pk, kid);
+    return ECPrivKey.fromECKeyPair(pk);
   }
 
   async deriveOVK(r: Uint8Array): Promise<ECPubKey> {
@@ -161,12 +165,40 @@ class SeedImple implements SeedDeriver, SeedNavigator {
     const sk = await this.OVK(r);
     const sk_api = await window.crypto.subtle.importKey(
       'jwk',
-      sk.toJWK(),
+      await sk.toJWK(),
       { name: 'ECDSA', namedCurve: 'P-256' },
       false,
       ['sign']
     );
     const sig = await window.crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, sk_api, cred);
+    return new Uint8Array(sig);
+  }
+
+  async isUpdating(): Promise<boolean> {
+    return this.seeds.length > 1;
+  }
+
+  async update(prevR: Uint8Array, nextOVK: ECPubKey): Promise<Uint8Array> {
+    if (!(await this.isUpdating())) {
+      throw new EvalError(`Migrating 中ではない`);
+    }
+    const { s } = this.seeds[this.seeds.length - 2];
+    if (!s) {
+      throw new EvalError(`Seed が有効でない`);
+    }
+    const prevSK = await this.OVK(prevR, s);
+    const sk_api = await window.crypto.subtle.importKey(
+      'jwk',
+      await prevSK.toJWK(),
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false,
+      ['sign']
+    );
+    const sig = await window.crypto.subtle.sign(
+      { name: 'ECDSA', hash: 'SHA-256' },
+      sk_api,
+      UTF8(JSON.stringify(await nextOVK.toJWK()))
+    );
     return new Uint8Array(sig);
   }
 }
