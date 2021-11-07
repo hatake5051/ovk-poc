@@ -1,6 +1,5 @@
-import { ec } from 'elliptic';
 import { ECPirvJWK, ECPrivKey, ECPubJWK, ECPubKey } from 'key';
-import { CONCAT, UTF8 } from 'utility';
+import { BASE64URL_DECODE, CONCAT, UTF8 } from 'utility';
 
 export type Seed = SeedDeriver & SeedNavigator & SeedUpdater;
 
@@ -43,8 +42,14 @@ interface SeedDeriver {
 }
 
 interface SeedNavigator {
-  startAgreement(update?: boolean): Promise<ECPubKey>;
-  agree(received: ECPubKey): Promise<boolean>;
+  negotiate(
+    meta: { id: string; devIDs: string[] },
+    epk?: Record<string, Record<number, ECPubJWK | undefined> | undefined>,
+    update?: boolean
+  ): Promise<{
+    completion: boolean;
+    epk: Record<number, ECPubJWK | undefined>;
+  }>;
 }
 
 interface SeedUpdater {
@@ -53,65 +58,107 @@ interface SeedUpdater {
 }
 
 class SeedImple implements SeedDeriver, SeedNavigator, SeedUpdater {
-  constructor(private seeds: { s?: Uint8Array; eprivk?: ECPrivKey }[] = []) {}
+  constructor(
+    private seeds: {
+      s?: Uint8Array;
+      e?: {
+        meta: { id: string; devIDs: string[] };
+        sk: ECPirvJWK;
+      };
+    }[] = []
+  ) {}
 
-  async startAgreement(update = false): Promise<ECPubKey> {
-    if (!update && this.seeds.length != 0) {
+  async negotiate(
+    meta: { id: string; devIDs: string[] },
+    epk?: Record<string, Record<number, ECPubJWK | undefined> | undefined>,
+    update = false
+  ): Promise<{
+    completion: boolean;
+    epk: Record<number, ECPubJWK | undefined>;
+  }> {
+    // ネゴシエートしていいか判断する
+    if (!update && this.seeds.length != 0 && this.seeds[this.seeds.length - 1].s) {
+      // シードをすでに保持していて、更新しようとしていないのに Seed.negotiate しようとした.
       throw new EvalError('シードをすでに保持している');
     }
     if (update && this.seeds.length != 1) {
+      // シードを持っていないのに、更新しようとしている
       throw new EvalError('シードの更新を始められない');
     }
-    const sk_api = await window.crypto.subtle.generateKey(
-      { name: 'ECDH', namedCurve: 'P-256' },
-      true,
-      ['deriveBits']
-    );
-    if (!sk_api.publicKey || !sk_api.privateKey) {
-      throw new TypeError('Extractive になっていない');
-    }
-    const sk = await window.crypto.subtle.exportKey('jwk', sk_api.privateKey);
-    const pk = await window.crypto.subtle.exportKey('jwk', sk_api.publicKey);
-    this.seeds.push({ eprivk: ECPrivKey.fromJWK(sk as ECPirvJWK) });
-    return ECPubKey.fromJWK(pk as ECPubJWK);
-  }
+    // ネゴシエートするための準備をする。
+    let seed = this.seeds.pop();
+    // ネゴシエート用の DH 秘密鍵を用意する。ネゴシエートの途中ですでに生成済みならそれを使用し、なければ生成する。
+    const sk = seed?.e?.sk ? ECPrivKey.fromJWK(seed.e?.sk) : await ECPrivKey.gen();
 
-  async agree(received: ECPubKey): Promise<boolean> {
-    try {
-      const pub_api = await window.crypto.subtle.importKey(
-        'jwk',
-        await received.toJWK(),
-        { name: 'ECDH', namedCurve: 'P-256' },
-        false,
-        []
-      );
-      const pop = this.seeds.pop();
-      if (!pop) {
-        throw new RangeError(`Seed 共有を始めていない`);
-      }
-      const { s, eprivk } = pop;
-      if (!eprivk || s) {
-        this.seeds.push(pop);
-        throw new EvalError(`有効でないSeed の共有`);
-      }
-      const priv_api = await window.crypto.subtle.importKey(
-        'jwk',
-        await eprivk.toJWK(),
-        { name: 'ECDH', namedCurve: 'P-256' },
-        false,
-        ['deriveBits']
-      );
-      const seed = await window.crypto.subtle.deriveBits(
-        { name: 'ECDH', public: pub_api },
-        priv_api,
-        256
-      );
-      this.seeds.push({ s: new Uint8Array(seed) });
-      return true;
-    } catch (e) {
-      console.log(e);
-      return false;
+    if (!seed) {
+      // seed が存在しなければまだネゴシエート用の secret key を一時保存
+      seed = { e: { sk: await sk.toJWK(), meta } };
     }
+    if (!seed.e) {
+      throw new EvalError(`ネゴシエート中だが ephemeral data が存在しない`);
+    }
+    if (
+      seed.e.meta.id !== meta.id ||
+      !(
+        seed.e.meta.devIDs.every((id) => meta.devIDs.includes(id)) &&
+        meta.devIDs.every((id) => seed?.e?.meta.devIDs.includes(id))
+      )
+    ) {
+      // ネゴシエート中の meta data が変わっていないかチェックする。
+      // meta data はネゴシエートに参加するデバイスの一時的な識別子
+      throw new EvalError(`シードのネゴシエート中に違うメタデータを使用している`);
+    }
+    // このデバイスで生成する DH 公開鍵。 0 step は対応する公開鍵そのもの
+    const ans: Record<number, ECPubJWK | undefined> = { 0: await (await sk.toECPubKey()).toJWK() };
+    // ネゴシエートする
+    if (epk) {
+      // device List をソートして相方のデバイスを決める (インデックスが一つ前のデバイス);
+      const devList = meta.devIDs.includes(meta.id) ? [...meta.devIDs] : [...meta.devIDs, meta.id];
+      devList.sort();
+      const idx = devList.indexOf(meta.id);
+      const counterpartDev = devList[idx === 0 ? devList.length - 1 : idx - 1];
+      // 相方のデバイスから出てきた epk に自身の sk で DH していく
+      const epk_cp = epk[counterpartDev];
+      if (epk_cp) {
+        // ３台以上のデバイスの場合は複数回 DH を繰り返してうまいことする
+        for (const [cs, pk] of Object.entries(epk_cp)) {
+          if (!pk) {
+            continue;
+          }
+          const c = parseInt(cs);
+          // c がデバイスの数 - 2 回目 より小さい時は DH の結果を他のデバイスに提供する
+          if (c < meta.devIDs.length - 2) {
+            // すでに計算済みかチェック
+            const x = epk[meta.id];
+            if (!x || !x[c + 1]) {
+              ans[c + 1] = await sk.computeDH(pk);
+            }
+          } else {
+            // デバイスの数 -1 の時は DH の結果がシードの値になる。
+            seed.s = BASE64URL_DECODE((await sk.computeDH(pk)).x);
+          }
+        }
+      }
+      // 自身のデバイスで DH をこれ以上する必要があるかチェックする
+      const x = epk[meta.id];
+      // 0 ~ devNum -2 まで全てのステップで DH していたら終わり
+      const computed = [...Object.keys(ans)];
+      if (x) {
+        computed.push(...Object.keys(x));
+      }
+      if (seed.s) {
+        computed.push(`${meta.devIDs.length - 1}`);
+      }
+      if (new Set(computed).size === meta.devIDs.length) {
+        seed.e = undefined;
+      }
+    }
+
+    this.seeds.push(seed);
+    return {
+      completion: seed.e == null && seed.s != null,
+      epk: ans,
+    };
   }
 
   private get seed(): Uint8Array {
@@ -127,8 +174,7 @@ class SeedImple implements SeedDeriver, SeedNavigator, SeedUpdater {
 
   private async OVK(r: Uint8Array, s?: Uint8Array): Promise<ECPrivKey> {
     const d = await kdf(s ?? this.seed, r, 256);
-    const pk = new ec('p256').keyFromPrivate(d);
-    return ECPrivKey.fromECKeyPair(pk);
+    return ECPrivKey.fromSecret(d);
   }
 
   async deriveOVK(r: Uint8Array): Promise<ECPubKey> {

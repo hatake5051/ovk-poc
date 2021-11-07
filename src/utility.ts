@@ -68,6 +68,21 @@ export function HexStr2Uint8Array(hexstr: string, len: number): Uint8Array {
   return ans;
 }
 
+export function Uint8Array2HexStr(arr: Uint8Array, len: number): string {
+  const str_arr = Array.from(arr).map(function (e) {
+    let hexchar = e.toString(16);
+    if (hexchar.length == 1) {
+      hexchar = '0' + hexchar;
+    }
+    return hexchar;
+  });
+  let ans = str_arr.join('');
+  if (ans.length < len * 2) {
+    ans = '0'.repeat(len * 2 - ans.length) + ans;
+  }
+  return ans;
+}
+
 /**
  * ２つのバイト列を結合する
  */
