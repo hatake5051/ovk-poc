@@ -1,12 +1,15 @@
 import { ECPirvJWK, ECPrivKey, ECPubJWK, ECPubKey } from 'key';
 import { BASE64URL_DECODE, CONCAT, UTF8 } from 'utility';
 
-export type Seed = SeedDeriver & SeedNavigator & SeedUpdater;
+export type Seed = SeedDeriver & SeedNegotiator & SeedUpdater;
 
 export function newSeed(): Seed {
   return new SeedImple();
 }
 
+/**
+ * SeedDeriver はシードから Ownership Verification Key を導出する機能
+ */
 interface SeedDeriver {
   /**
    * 乱数とシードから Ownership Verification Key を導出する。
@@ -41,7 +44,19 @@ interface SeedDeriver {
   signOVK(OVK: ECPubKey, r: Uint8Array, cred: Uint8Array): Promise<Uint8Array>;
 }
 
-interface SeedNavigator {
+/**
+ * SeedNegotiator はシードを他のデバイスとネゴシエートして同一シードを共有する機能
+ */
+interface SeedNegotiator {
+  /**
+   * 他のデバイスと同一シードを共有するために DH 鍵共有を複数デバイスと行う。
+   * ３台以上の場合は、何度かデバイス同士でインタラクションする。
+   * @param meta ネゴシエートする際に一時的に利用するデバイスの識別子に関する情報。
+   * @param epk ネゴシエート中に公開された DH 公開鍵
+   * @param update シードの更新を行う場合、true にする（シードを複数持つことができる)
+   * @returns completion はこのデバイスのシード計算が終了したことを表す。
+   * epk は公開する DH 公開鍵情報
+   */
   negotiate(
     meta: { id: string; devIDs: string[] },
     epk?: Record<string, Record<number, ECPubJWK | undefined> | undefined>,
@@ -57,7 +72,7 @@ interface SeedUpdater {
   update(prevR: Uint8Array, nextOVK: ECPubKey): Promise<Uint8Array>;
 }
 
-class SeedImple implements SeedDeriver, SeedNavigator, SeedUpdater {
+class SeedImple implements SeedDeriver, SeedNegotiator, SeedUpdater {
   constructor(
     private seeds: {
       s?: Uint8Array;
@@ -76,24 +91,39 @@ class SeedImple implements SeedDeriver, SeedNavigator, SeedUpdater {
     completion: boolean;
     epk: Record<number, ECPubJWK | undefined>;
   }> {
-    // ネゴシエートしていいか判断する
-    if (!update && this.seeds.length != 0 && this.seeds[this.seeds.length - 1].s) {
-      // シードをすでに保持していて、更新しようとしていないのに Seed.negotiate しようとした.
-      throw new EvalError('シードをすでに保持している');
-    }
-    if (update && this.seeds.length != 1) {
-      // シードを持っていないのに、更新しようとしている
-      throw new EvalError('シードの更新を始められない');
-    }
-    // ネゴシエートするための準備をする。
-    let seed = this.seeds.pop();
-    // ネゴシエート用の DH 秘密鍵を用意する。ネゴシエートの途中ですでに生成済みならそれを使用し、なければ生成する。
-    const sk = seed?.e?.sk ? ECPrivKey.fromJWK(seed.e?.sk) : await ECPrivKey.gen();
+    const { seed, sk } = await (async () => {
+      if (!update) {
+        // シードの更新ではなく共有の時はまだ一つもシードを持っていない
+        if (this.seeds.length != 0 && this.seeds[this.seeds.length - 1].s) {
+          // シードをすでに保持していて、更新しようとしていないのに Seed.negotiate しようとした.
+          throw new EvalError('シードをすでに保持している');
+        }
+        // ネゴシエートするための準備をする。
+        const seed = this.seeds.pop();
+        // ネゴシエート用の DH 秘密鍵を用意する。ネゴシエートの途中ですでに生成済みならそれを使用し、なければ生成する。
+        const sk = seed?.e?.sk ? ECPrivKey.fromJWK(seed.e?.sk) : await ECPrivKey.gen();
+        return {
+          seed: seed ?? { e: { sk: await sk.toJWK(), meta } },
+          sk,
+        };
+      } else {
+        if (this.seeds.length == 0) {
+          // シードを持っていないのに、更新しようとしている
+          throw new EvalError('シードを１つも所持していない');
+        }
+        const seed = !this.seeds[this.seeds.length - 1].s ? this.seeds.pop() : undefined;
+        if (seed && this.seeds.length > 1 && !this.seeds[this.seeds.length - 2].s) {
+          throw new EvalError(`一つ前のシードのネゴシエートが終わっていない`);
+        }
+        // ネゴシエート用の DH 秘密鍵を用意する。ネゴシエートの途中ですでに生成済みならそれを使用し、なければ生成する。
+        const sk = seed?.e?.sk ? ECPrivKey.fromJWK(seed?.e?.sk) : await ECPrivKey.gen();
+        return {
+          seed: seed ?? { e: { sk: await sk.toJWK(), meta } },
+          sk,
+        };
+      }
+    })();
 
-    if (!seed) {
-      // seed が存在しなければまだネゴシエート用の secret key を一時保存
-      seed = { e: { sk: await sk.toJWK(), meta } };
-    }
     if (!seed.e) {
       throw new EvalError(`ネゴシエート中だが ephemeral data が存在しない`);
     }
@@ -140,12 +170,15 @@ class SeedImple implements SeedDeriver, SeedNavigator, SeedUpdater {
         }
       }
       // 自身のデバイスで DH をこれ以上する必要があるかチェックする
-      const x = epk[meta.id];
-      // 0 ~ devNum -2 まで全てのステップで DH していたら終わり
+      // 0 ~ devNum -1 まで全てのステップで DH していたら終わり
+      // 今回計算した DH
       const computed = [...Object.keys(ans)];
+      // 以前に計算していた DH
+      const x = epk[meta.id];
       if (x) {
         computed.push(...Object.keys(x));
       }
+      // 最後の１ step の DH をしているか
       if (seed.s) {
         computed.push(`${meta.devIDs.length - 1}`);
       }
@@ -156,6 +189,7 @@ class SeedImple implements SeedDeriver, SeedNavigator, SeedUpdater {
 
     this.seeds.push(seed);
     return {
+      // 他のデバイスのための計算を全て終わらせて (seed.e == null)、かつ自身のデバイスのための計算を全て終わらせていたら (seed.s != null)
       completion: seed.e == null && seed.s != null,
       epk: ans,
     };
