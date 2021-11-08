@@ -1,8 +1,4 @@
-import { BN } from 'bn.js';
-import { ec } from 'elliptic';
-import { BASE64URL, BASE64URL_DECODE, HexStr2Uint8Array, Uint8Array2HexStr, UTF8 } from 'utility';
-
-const p256 = new ec('p256');
+import { BASE64URL, BASE64URL_DECODE, ECP256, SHA256, UTF8 } from 'utility';
 
 export type ECPubJWK = { kty: 'EC'; kid?: string; crv: string; x: string; y: string };
 
@@ -29,8 +25,8 @@ export class ECPubKey {
       x: this.x('b64u'),
       y: this.y('b64u'),
     });
-    const dgst = await window.crypto.subtle.digest('SHA-256', UTF8(json));
-    return BASE64URL(new Uint8Array(dgst));
+    const dgst = await SHA256(UTF8(json));
+    return BASE64URL(dgst);
   }
 
   get crv(): 'P-256' {
@@ -82,14 +78,7 @@ export class ECPubKey {
   }
 
   async verify(m: Uint8Array, s: Uint8Array): Promise<boolean> {
-    const k = await window.crypto.subtle.importKey(
-      'jwk',
-      (await this.toJWK()) as JsonWebKey,
-      { name: 'ECDSA', namedCurve: 'P-256' },
-      false,
-      ['verify']
-    );
-    return await window.crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, k, s, m);
+    return ECP256.verify(await this.toJWK(), m, s);
   }
 }
 
@@ -121,8 +110,8 @@ export class ECPrivKey {
       x: this.x('b64u'),
       y: this.y('b64u'),
     });
-    const dgst = await window.crypto.subtle.digest('SHA-256', UTF8(json));
-    return BASE64URL(new Uint8Array(dgst));
+    const dgst = await SHA256(UTF8(json));
+    return BASE64URL(dgst);
   }
 
   x(format: 'b64u'): string;
@@ -159,15 +148,7 @@ export class ECPrivKey {
   }
 
   static async fromSecret(d: Uint8Array): Promise<ECPrivKey> {
-    const pk = p256.keyFromPrivate(d);
-    const d_bytes = HexStr2Uint8Array(pk.getPrivate('hex'), 32);
-    const xy_hexstr = pk.getPublic('hex');
-    if (!xy_hexstr.startsWith('04')) {
-      throw new TypeError(`Cannot convert to JWK`);
-    }
-    const x_bytes = HexStr2Uint8Array(xy_hexstr.slice(2, 32 * 2 + 2), 32);
-    const y_bytes = HexStr2Uint8Array(xy_hexstr.slice(32 * 2 + 2), 32);
-    return new ECPrivKey(x_bytes, y_bytes, d_bytes);
+    return ECPrivKey.fromJWK((await ECP256.gen(d)) as ECPirvJWK);
   }
 
   static fromJWK(jwk: ECPirvJWK): ECPrivKey {
@@ -180,16 +161,7 @@ export class ECPrivKey {
   }
 
   static async gen(): Promise<ECPrivKey> {
-    const sk_api = await window.crypto.subtle.generateKey(
-      { name: 'ECDH', namedCurve: 'P-256' },
-      true,
-      ['deriveBits']
-    );
-    if (!sk_api.privateKey) {
-      throw new TypeError('Extractive になっていない');
-    }
-    const sk = await window.crypto.subtle.exportKey('jwk', sk_api.privateKey);
-    return ECPrivKey.fromJWK(sk as ECPirvJWK);
+    return ECPrivKey.fromJWK((await ECP256.gen()) as ECPirvJWK);
   }
 
   async toECPubKey(): Promise<ECPubKey> {
@@ -208,28 +180,10 @@ export class ECPrivKey {
   }
 
   async computeDH(pk: ECPubJWK): Promise<ECPubJWK> {
-    const keypair = p256.keyFromPublic({
-      x: Uint8Array2HexStr(BASE64URL_DECODE(pk.x), 32),
-      y: Uint8Array2HexStr(BASE64URL_DECODE(pk.y), 32),
-    });
-    const bp = keypair.getPublic().mul(new BN(this.d('oct')));
-    return {
-      kty: 'EC',
-      crv: 'P-256',
-      x: BASE64URL(HexStr2Uint8Array(bp.getX().toString(16, 32), 32)),
-      y: BASE64URL(HexStr2Uint8Array(bp.getY().toString(16, 32), 32)),
-    };
+    return (await ECP256.dh(pk, await this.toJWK())) as ECPubJWK;
   }
 
   async sign(m: Uint8Array): Promise<Uint8Array> {
-    const k_api = await window.crypto.subtle.importKey(
-      'jwk',
-      (await this.toJWK()) as JsonWebKey,
-      { name: 'ECDSA', namedCurve: 'P-256' },
-      false,
-      ['sign']
-    );
-    const sig = await window.crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, k_api, m);
-    return new Uint8Array(sig);
+    return ECP256.sign(await this.toJWK(), m);
   }
 }

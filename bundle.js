@@ -6349,9 +6349,9 @@ var sha256_K = [
   0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 ];
 
-function SHA256$1() {
-  if (!(this instanceof SHA256$1))
-    return new SHA256$1();
+function SHA256$2() {
+  if (!(this instanceof SHA256$2))
+    return new SHA256$2();
 
   BlockHash$2.call(this);
   this.h = [
@@ -6361,15 +6361,15 @@ function SHA256$1() {
   this.k = sha256_K;
   this.W = new Array(64);
 }
-utils$c.inherits(SHA256$1, BlockHash$2);
-var _256 = SHA256$1;
+utils$c.inherits(SHA256$2, BlockHash$2);
+var _256 = SHA256$2;
 
-SHA256$1.blockSize = 512;
-SHA256$1.outSize = 256;
-SHA256$1.hmacStrength = 192;
-SHA256$1.padLength = 64;
+SHA256$2.blockSize = 512;
+SHA256$2.outSize = 256;
+SHA256$2.hmacStrength = 192;
+SHA256$2.padLength = 64;
 
-SHA256$1.prototype._update = function _update(msg, start) {
+SHA256$2.prototype._update = function _update(msg, start) {
   var W = this.W;
 
   for (var i = 0; i < 16; i++)
@@ -6410,7 +6410,7 @@ SHA256$1.prototype._update = function _update(msg, start) {
   this.h[7] = sum32$1(this.h[7], h);
 };
 
-SHA256$1.prototype._digest = function digest(enc) {
+SHA256$2.prototype._digest = function digest(enc) {
   if (enc === 'hex')
     return utils$c.toHex32(this.h, 'big');
   else
@@ -6418,18 +6418,18 @@ SHA256$1.prototype._digest = function digest(enc) {
 };
 
 var utils$b = utils$g;
-var SHA256 = _256;
+var SHA256$1 = _256;
 
 function SHA224() {
   if (!(this instanceof SHA224))
     return new SHA224();
 
-  SHA256.call(this);
+  SHA256$1.call(this);
   this.h = [
     0xc1059ed8, 0x367cd507, 0x3070dd17, 0xf70e5939,
     0xffc00b31, 0x68581511, 0x64f98fa7, 0xbefa4fa4 ];
 }
-utils$b.inherits(SHA224, SHA256);
+utils$b.inherits(SHA224, SHA256$1);
 var _224 = SHA224;
 
 SHA224.blockSize = 512;
@@ -8163,14 +8163,6 @@ elliptic.eddsa = eddsa;
 }(elliptic));
 
 /**
- * 乱数列を生成する。
- * @param len 生成したいランダム列の長さ(バイト列)
- * @returns 乱数列
- */
-function RandUint8Array(len) {
-    return window.crypto.getRandomValues(new Uint8Array(len));
-}
-/**
  * 文字列を UTF8 バイトエンコードする。(string to Uint8Array)
  */
 function UTF8(STRING) {
@@ -8266,8 +8258,140 @@ function CONCAT(A, B) {
     ans.set(B, A.length);
     return ans;
 }
-
+/**
+ * 乱数列を生成する。
+ * @param len 生成したいランダム列の長さ(バイト列)
+ * @returns 乱数列
+ */
+function RandUint8Array(len) {
+    return window.crypto.getRandomValues(new Uint8Array(len));
+}
+const HKDF = async (key, salt, length) => {
+    const k = await window.crypto.subtle.importKey('raw', key, 'HKDF', false, ['deriveBits']);
+    const derivedKeyMaterial = await window.crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt, info: new Uint8Array() }, k, length);
+    return new Uint8Array(derivedKeyMaterial);
+};
+const SHA256 = async (m) => {
+    const dgst = await window.crypto.subtle.digest('SHA-256', m);
+    return new Uint8Array(dgst);
+};
+const HMAC = {
+    async mac(key, m) {
+        const sk_api = await window.crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+        const mac = await window.crypto.subtle.sign('HMAC', sk_api, m);
+        return new Uint8Array(mac);
+    },
+    async verify(key, m, mac) {
+        const sk_api = await window.crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
+        return await window.crypto.subtle.verify('HMAC', sk_api, mac, m);
+    },
+};
 const p256 = new elliptic.ec('p256');
+const ECP256 = {
+    async gen(secret) {
+        if (secret) {
+            const pk = p256.keyFromPrivate(secret);
+            const d_bytes = HexStr2Uint8Array(pk.getPrivate('hex'), 32);
+            const xy_hexstr = pk.getPublic('hex');
+            if (!xy_hexstr.startsWith('04')) {
+                throw new TypeError(`Cannot convert to JWK`);
+            }
+            const x_bytes = HexStr2Uint8Array(xy_hexstr.slice(2, 32 * 2 + 2), 32);
+            const y_bytes = HexStr2Uint8Array(xy_hexstr.slice(32 * 2 + 2), 32);
+            return {
+                kty: 'EC',
+                crv: 'P-256',
+                d: BASE64URL(d_bytes),
+                x: BASE64URL(x_bytes),
+                y: BASE64URL(y_bytes),
+            };
+        }
+        const sk_api = await window.crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+        if (!sk_api.privateKey) {
+            throw new TypeError('Extractive になっていない');
+        }
+        const sk = await window.crypto.subtle.exportKey('jwk', sk_api.privateKey);
+        return sk;
+    },
+    async sign(sk, m) {
+        const k_api = await window.crypto.subtle.importKey('jwk', sk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
+        const sig = await window.crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, k_api, m);
+        return new Uint8Array(sig);
+    },
+    async verify(pk, m, s) {
+        const k = await window.crypto.subtle.importKey('jwk', pk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+        return await window.crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, k, s, m);
+    },
+    async dh(pk, sk) {
+        const keypair = p256.keyFromPublic({
+            x: Uint8Array2HexStr(BASE64URL_DECODE(pk.x), 32),
+            y: Uint8Array2HexStr(BASE64URL_DECODE(pk.y), 32),
+        });
+        const bp = keypair.getPublic().mul(new bn.exports.BN(BASE64URL_DECODE(sk.d)));
+        return {
+            kty: 'EC',
+            crv: 'P-256',
+            x: BASE64URL(HexStr2Uint8Array(bp.getX().toString(16, 32), 32)),
+            y: BASE64URL(HexStr2Uint8Array(bp.getY().toString(16, 32), 32)),
+        };
+    },
+};
+const PBES2JWE = {
+    async compact(pw, m) {
+        // PBES2 用の JOSE Header を用意して
+        const header = {
+            alg: 'PBES2-HS256+A128KW',
+            enc: 'A128GCM',
+            p2c: 1000,
+            p2s: BASE64URL(RandUint8Array(16)),
+        };
+        const header_b64u = BASE64URL(UTF8(JSON.stringify(header)));
+        // Content Encryption Key を乱数生成する
+        const cek = RandUint8Array(16);
+        const cek_api = await window.crypto.subtle.importKey('raw', cek, 'AES-GCM', true, ['encrypt']);
+        // CEK を使って m を暗号化
+        const iv = RandUint8Array(12);
+        const e = new Uint8Array(await window.crypto.subtle.encrypt({
+            name: 'AES-GCM',
+            iv,
+            additionalData: ASCII(header_b64u),
+        }, cek_api, m));
+        const ciphertext = e.slice(0, e.length - 16);
+        const atag = e.slice(e.length - 16);
+        // PBES2 で導出した鍵で CEK をラップして Encrypted Key を生成する
+        const dk_api = await window.crypto.subtle.importKey('raw', await window.crypto.subtle.deriveBits({
+            name: 'PBKDF2',
+            hash: 'SHA-256',
+            salt: CONCAT(CONCAT(UTF8(header.alg), new Uint8Array([0])), BASE64URL_DECODE(header.p2s)),
+            iterations: header.p2c,
+        }, await window.crypto.subtle.importKey('raw', UTF8(pw), 'PBKDF2', false, ['deriveBits']), 128), { name: 'AES-KW' }, false, ['wrapKey']);
+        const ek = new Uint8Array(await window.crypto.subtle.wrapKey('raw', cek_api, dk_api, { name: 'AES-KW' }));
+        const ek_b64u = BASE64URL(ek);
+        return `${header_b64u}.${ek_b64u}.${BASE64URL(iv)}.${BASE64URL(ciphertext)}.${BASE64URL(atag)}`;
+    },
+    async dec(pw, compact) {
+        const l = compact.split('.');
+        if (l.length !== 5) {
+            throw new EvalError('JWE Compact Serialization の形式ではない');
+        }
+        const [h_b64u, ek_b64u, iv_b64u, c_b64u, atag_b64u] = l;
+        const header = JSON.parse(UTF8_DECODE(BASE64URL_DECODE(h_b64u)));
+        // PBES2 で導出した鍵で EK をアンラップして CEK を得る
+        const dk_api = await window.crypto.subtle.importKey('raw', await window.crypto.subtle.deriveBits({
+            name: 'PBKDF2',
+            hash: 'SHA-256',
+            salt: CONCAT(CONCAT(UTF8(header.alg), new Uint8Array([0])), BASE64URL_DECODE(header.p2s)),
+            iterations: header.p2c,
+        }, await window.crypto.subtle.importKey('raw', UTF8(pw), 'PBKDF2', false, ['deriveBits']), 128), { name: 'AES-KW' }, false, ['unwrapKey']);
+        const cek_api = await window.crypto.subtle.unwrapKey('raw', BASE64URL_DECODE(ek_b64u), dk_api, {
+            name: 'AES-KW',
+        }, 'AES-GCM', true, ['decrypt']);
+        // CEK を使って ciphertext と authentication tag から平文を復号し整合性を検証する
+        const e = await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv: BASE64URL_DECODE(iv_b64u), additionalData: ASCII(h_b64u) }, cek_api, CONCAT(BASE64URL_DECODE(c_b64u), BASE64URL_DECODE(atag_b64u)));
+        return new Uint8Array(e);
+    },
+};
+
 function equalECPubJWK(l, r) {
     if (!l && !r)
         return true;
@@ -8294,8 +8418,8 @@ class ECPubKey {
             x: this.x('b64u'),
             y: this.y('b64u'),
         });
-        const dgst = await window.crypto.subtle.digest('SHA-256', UTF8(json));
-        return BASE64URL(new Uint8Array(dgst));
+        const dgst = await SHA256(UTF8(json));
+        return BASE64URL(dgst);
     }
     get crv() {
         return 'P-256';
@@ -8335,8 +8459,7 @@ class ECPubKey {
         };
     }
     async verify(m, s) {
-        const k = await window.crypto.subtle.importKey('jwk', (await this.toJWK()), { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
-        return await window.crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, k, s, m);
+        return ECP256.verify(await this.toJWK(), m, s);
     }
 }
 class ECPrivKey {
@@ -8362,8 +8485,8 @@ class ECPrivKey {
             x: this.x('b64u'),
             y: this.y('b64u'),
         });
-        const dgst = await window.crypto.subtle.digest('SHA-256', UTF8(json));
-        return BASE64URL(new Uint8Array(dgst));
+        const dgst = await SHA256(UTF8(json));
+        return BASE64URL(dgst);
     }
     x(format) {
         switch (format) {
@@ -8390,26 +8513,13 @@ class ECPrivKey {
         }
     }
     static async fromSecret(d) {
-        const pk = p256.keyFromPrivate(d);
-        const d_bytes = HexStr2Uint8Array(pk.getPrivate('hex'), 32);
-        const xy_hexstr = pk.getPublic('hex');
-        if (!xy_hexstr.startsWith('04')) {
-            throw new TypeError(`Cannot convert to JWK`);
-        }
-        const x_bytes = HexStr2Uint8Array(xy_hexstr.slice(2, 32 * 2 + 2), 32);
-        const y_bytes = HexStr2Uint8Array(xy_hexstr.slice(32 * 2 + 2), 32);
-        return new ECPrivKey(x_bytes, y_bytes, d_bytes);
+        return ECPrivKey.fromJWK((await ECP256.gen(d)));
     }
     static fromJWK(jwk) {
         return new ECPrivKey(BASE64URL_DECODE(jwk.x), BASE64URL_DECODE(jwk.y), BASE64URL_DECODE(jwk.d), jwk.kid);
     }
     static async gen() {
-        const sk_api = await window.crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
-        if (!sk_api.privateKey) {
-            throw new TypeError('Extractive になっていない');
-        }
-        const sk = await window.crypto.subtle.exportKey('jwk', sk_api.privateKey);
-        return ECPrivKey.fromJWK(sk);
+        return ECPrivKey.fromJWK((await ECP256.gen()));
     }
     async toECPubKey() {
         return ECPubKey.fromPrivKey(this);
@@ -8425,22 +8535,10 @@ class ECPrivKey {
         };
     }
     async computeDH(pk) {
-        const keypair = p256.keyFromPublic({
-            x: Uint8Array2HexStr(BASE64URL_DECODE(pk.x), 32),
-            y: Uint8Array2HexStr(BASE64URL_DECODE(pk.y), 32),
-        });
-        const bp = keypair.getPublic().mul(new bn.exports.BN(this.d('oct')));
-        return {
-            kty: 'EC',
-            crv: 'P-256',
-            x: BASE64URL(HexStr2Uint8Array(bp.getX().toString(16, 32), 32)),
-            y: BASE64URL(HexStr2Uint8Array(bp.getY().toString(16, 32), 32)),
-        };
+        return (await ECP256.dh(pk, await this.toJWK()));
     }
     async sign(m) {
-        const k_api = await window.crypto.subtle.importKey('jwk', (await this.toJWK()), { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
-        const sig = await window.crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, k_api, m);
-        return new Uint8Array(sig);
+        return ECP256.sign(await this.toJWK(), m);
     }
 }
 
@@ -8584,61 +8682,6 @@ class Device {
         }
     }
 }
-const PBES2JWE = {
-    async compact(pw, m) {
-        // PBES2 用の JOSE Header を用意して
-        const header = {
-            alg: 'PBES2-HS256+A128KW',
-            enc: 'A128GCM',
-            p2c: 1000,
-            p2s: BASE64URL(RandUint8Array(16)),
-        };
-        const header_b64u = BASE64URL(UTF8(JSON.stringify(header)));
-        // Content Encryption Key を乱数生成する
-        const cek = RandUint8Array(16);
-        const cek_api = await window.crypto.subtle.importKey('raw', cek, 'AES-GCM', true, ['encrypt']);
-        // CEK を使って m を暗号化
-        const iv = RandUint8Array(12);
-        const e = new Uint8Array(await window.crypto.subtle.encrypt({
-            name: 'AES-GCM',
-            iv,
-            additionalData: ASCII(header_b64u),
-        }, cek_api, m));
-        const ciphertext = e.slice(0, e.length - 16);
-        const atag = e.slice(e.length - 16);
-        // PBES2 で導出した鍵で CEK をラップして Encrypted Key を生成する
-        const dk_api = await window.crypto.subtle.importKey('raw', await window.crypto.subtle.deriveBits({
-            name: 'PBKDF2',
-            hash: 'SHA-256',
-            salt: CONCAT(CONCAT(UTF8(header.alg), new Uint8Array([0])), BASE64URL_DECODE(header.p2s)),
-            iterations: header.p2c,
-        }, await window.crypto.subtle.importKey('raw', UTF8(pw), 'PBKDF2', false, ['deriveBits']), 128), { name: 'AES-KW' }, false, ['wrapKey']);
-        const ek = new Uint8Array(await window.crypto.subtle.wrapKey('raw', cek_api, dk_api, { name: 'AES-KW' }));
-        const ek_b64u = BASE64URL(ek);
-        return `${header_b64u}.${ek_b64u}.${BASE64URL(iv)}.${BASE64URL(ciphertext)}.${BASE64URL(atag)}`;
-    },
-    async dec(pw, compact) {
-        const l = compact.split('.');
-        if (l.length !== 5) {
-            throw new EvalError('JWE Compact Serialization の形式ではない');
-        }
-        const [h_b64u, ek_b64u, iv_b64u, c_b64u, atag_b64u] = l;
-        const header = JSON.parse(UTF8_DECODE(BASE64URL_DECODE(h_b64u)));
-        // PBES2 で導出した鍵で EK をアンラップして CEK を得る
-        const dk_api = await window.crypto.subtle.importKey('raw', await window.crypto.subtle.deriveBits({
-            name: 'PBKDF2',
-            hash: 'SHA-256',
-            salt: CONCAT(CONCAT(UTF8(header.alg), new Uint8Array([0])), BASE64URL_DECODE(header.p2s)),
-            iterations: header.p2c,
-        }, await window.crypto.subtle.importKey('raw', UTF8(pw), 'PBKDF2', false, ['deriveBits']), 128), { name: 'AES-KW' }, false, ['unwrapKey']);
-        const cek_api = await window.crypto.subtle.unwrapKey('raw', BASE64URL_DECODE(ek_b64u), dk_api, {
-            name: 'AES-KW',
-        }, 'AES-GCM', true, ['decrypt']);
-        // CEK を使って ciphertext と authentication tag から平文を復号し整合性を検証する
-        const e = await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv: BASE64URL_DECODE(iv_b64u), additionalData: ASCII(h_b64u) }, cek_api, CONCAT(BASE64URL_DECODE(c_b64u), BASE64URL_DECODE(atag_b64u)));
-        return new Uint8Array(e);
-    },
-};
 
 function newSeed() {
     return new SeedImpl();
@@ -8727,7 +8770,7 @@ class SeedImpl {
         return this.seeds[this.seeds.length - 1];
     }
     async OVK(r, s) {
-        const d = await kdf(s ?? this.seed, r, 256);
+        const d = await HKDF(s ?? this.seed, r, 256);
         return ECPrivKey.fromSecret(d);
     }
     async deriveOVK(r) {
@@ -8736,20 +8779,15 @@ class SeedImpl {
     }
     async macOVK(r, svcID) {
         const sk = await this.OVK(r);
-        const sk_api = await window.crypto.subtle.importKey('raw', sk.d('oct'), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-        const mac = await window.crypto.subtle.sign('HMAC', sk_api, CONCAT(r, UTF8(svcID)));
-        return new Uint8Array(mac);
+        return await HMAC.mac(sk.d('oct'), CONCAT(r, UTF8(svcID)));
     }
     async verifyOVK(r, svcID, MAC) {
         const sk = await this.OVK(r);
-        const sk_api = await window.crypto.subtle.importKey('raw', sk.d('oct'), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
-        return await window.crypto.subtle.verify('HMAC', sk_api, MAC, CONCAT(r, UTF8(svcID)));
+        return await HMAC.verify(sk.d('oct'), CONCAT(r, UTF8(svcID)), MAC);
     }
     async signOVK(r, cred) {
         const sk = await this.OVK(r);
-        const sk_api = await window.crypto.subtle.importKey('jwk', await sk.toJWK(), { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
-        const sig = await window.crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, sk_api, cred);
-        return new Uint8Array(sig);
+        return await sk.sign(cred);
     }
     async isUpdating() {
         return this.seeds.length > 1;
@@ -8763,15 +8801,9 @@ class SeedImpl {
             throw new EvalError(`Seed が有効でない`);
         }
         const prevSK = await this.OVK(prevR, s);
-        const sk_api = await window.crypto.subtle.importKey('jwk', await prevSK.toJWK(), { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
-        const sig = await window.crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, sk_api, UTF8(JSON.stringify(await nextOVK.toJWK())));
+        const sig = await prevSK.sign(UTF8(JSON.stringify(await nextOVK.toJWK())));
         return new Uint8Array(sig);
     }
-}
-async function kdf(kdfkey, salt, length) {
-    const key = await window.crypto.subtle.importKey('raw', kdfkey, 'HKDF', false, ['deriveBits']);
-    const derivedKeyMaterial = await window.crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt, info: new Uint8Array() }, key, length);
-    return new Uint8Array(derivedKeyMaterial);
 }
 
 function newService(id) {

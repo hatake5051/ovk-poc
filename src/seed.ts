@@ -1,5 +1,5 @@
 import { ECPirvJWK, ECPrivKey, ECPubJWK, ECPubKey } from 'key';
-import { BASE64URL_DECODE, CONCAT, UTF8 } from 'utility';
+import { BASE64URL_DECODE, CONCAT, HKDF, HMAC, UTF8 } from 'utility';
 
 export type Seed = SeedDeriver & SeedNegotiator & SeedUpdater;
 
@@ -175,7 +175,7 @@ class SeedImpl implements SeedDeriver, SeedNegotiator, SeedUpdater {
   }
 
   private async OVK(r: Uint8Array, s?: Uint8Array): Promise<ECPrivKey> {
-    const d = await kdf(s ?? this.seed, r, 256);
+    const d = await HKDF(s ?? this.seed, r, 256);
     return ECPrivKey.fromSecret(d);
   }
 
@@ -186,40 +186,17 @@ class SeedImpl implements SeedDeriver, SeedNegotiator, SeedUpdater {
 
   async macOVK(r: Uint8Array, svcID: string): Promise<Uint8Array> {
     const sk = await this.OVK(r);
-    const sk_api = await window.crypto.subtle.importKey(
-      'raw',
-      sk.d('oct'),
-      { name: 'HMAC', hash: 'SHA-256' },
-      false,
-      ['sign']
-    );
-    const mac = await window.crypto.subtle.sign('HMAC', sk_api, CONCAT(r, UTF8(svcID)));
-    return new Uint8Array(mac);
+    return await HMAC.mac(sk.d('oct'), CONCAT(r, UTF8(svcID)));
   }
 
   async verifyOVK(r: Uint8Array, svcID: string, MAC: Uint8Array): Promise<boolean> {
     const sk = await this.OVK(r);
-    const sk_api = await window.crypto.subtle.importKey(
-      'raw',
-      sk.d('oct'),
-      { name: 'HMAC', hash: 'SHA-256' },
-      false,
-      ['verify']
-    );
-    return await window.crypto.subtle.verify('HMAC', sk_api, MAC, CONCAT(r, UTF8(svcID)));
+    return await HMAC.verify(sk.d('oct'), CONCAT(r, UTF8(svcID)), MAC);
   }
 
   async signOVK(r: Uint8Array, cred: Uint8Array): Promise<Uint8Array> {
     const sk = await this.OVK(r);
-    const sk_api = await window.crypto.subtle.importKey(
-      'jwk',
-      await sk.toJWK(),
-      { name: 'ECDSA', namedCurve: 'P-256' },
-      false,
-      ['sign']
-    );
-    const sig = await window.crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, sk_api, cred);
-    return new Uint8Array(sig);
+    return await sk.sign(cred);
   }
 
   async isUpdating(): Promise<boolean> {
@@ -235,28 +212,7 @@ class SeedImpl implements SeedDeriver, SeedNegotiator, SeedUpdater {
       throw new EvalError(`Seed が有効でない`);
     }
     const prevSK = await this.OVK(prevR, s);
-    const sk_api = await window.crypto.subtle.importKey(
-      'jwk',
-      await prevSK.toJWK(),
-      { name: 'ECDSA', namedCurve: 'P-256' },
-      false,
-      ['sign']
-    );
-    const sig = await window.crypto.subtle.sign(
-      { name: 'ECDSA', hash: 'SHA-256' },
-      sk_api,
-      UTF8(JSON.stringify(await nextOVK.toJWK()))
-    );
+    const sig = await prevSK.sign(UTF8(JSON.stringify(await nextOVK.toJWK())));
     return new Uint8Array(sig);
   }
-}
-
-async function kdf(kdfkey: Uint8Array, salt: Uint8Array, length: number): Promise<Uint8Array> {
-  const key = await window.crypto.subtle.importKey('raw', kdfkey, 'HKDF', false, ['deriveBits']);
-  const derivedKeyMaterial = await window.crypto.subtle.deriveBits(
-    { name: 'HKDF', hash: 'SHA-256', salt, info: new Uint8Array() },
-    key,
-    length
-  );
-  return new Uint8Array(derivedKeyMaterial);
 }
