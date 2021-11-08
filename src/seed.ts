@@ -74,13 +74,12 @@ interface SeedUpdater {
 
 class SeedImple implements SeedDeriver, SeedNegotiator, SeedUpdater {
   constructor(
-    private seeds: {
-      s?: Uint8Array;
-      e?: {
-        meta: { id: string; devIDs: string[] };
-        sk: ECPirvJWK;
-      };
-    }[] = []
+    private seeds: Uint8Array[] = [],
+    private e?: {
+      meta: { id: string; devIDs: string[]; partnerID: string };
+      sk: ECPirvJWK;
+      idx: number;
+    }
   ) {}
 
   async negotiate(
@@ -91,64 +90,47 @@ class SeedImple implements SeedDeriver, SeedNegotiator, SeedUpdater {
     completion: boolean;
     epk: Record<number, ECPubJWK | undefined>;
   }> {
-    const { seed, sk } = await (async () => {
-      if (!update) {
-        // シードの更新ではなく共有の時はまだ一つもシードを持っていない
-        if (this.seeds.length != 0 && this.seeds[this.seeds.length - 1].s) {
-          // シードをすでに保持していて、更新しようとしていないのに Seed.negotiate しようとした.
-          throw new EvalError('シードをすでに保持している');
-        }
-        // ネゴシエートするための準備をする。
-        const seed = this.seeds.pop();
-        // ネゴシエート用の DH 秘密鍵を用意する。ネゴシエートの途中ですでに生成済みならそれを使用し、なければ生成する。
-        const sk = seed?.e?.sk ? ECPrivKey.fromJWK(seed.e?.sk) : await ECPrivKey.gen();
-        return {
-          seed: seed ?? { e: { sk: await sk.toJWK(), meta } },
-          sk,
-        };
-      } else {
-        if (this.seeds.length == 0) {
-          // シードを持っていないのに、更新しようとしている
-          throw new EvalError('シードを１つも所持していない');
-        }
-        const seed = !this.seeds[this.seeds.length - 1].s ? this.seeds.pop() : undefined;
-        if (seed && this.seeds.length > 1 && !this.seeds[this.seeds.length - 2].s) {
-          throw new EvalError(`一つ前のシードのネゴシエートが終わっていない`);
-        }
-        // ネゴシエート用の DH 秘密鍵を用意する。ネゴシエートの途中ですでに生成済みならそれを使用し、なければ生成する。
-        const sk = seed?.e?.sk ? ECPrivKey.fromJWK(seed?.e?.sk) : await ECPrivKey.gen();
-        return {
-          seed: seed ?? { e: { sk: await sk.toJWK(), meta } },
-          sk,
-        };
+    // Updating かどうか、その場合のすでに所有済みのシードの一人の整合性をチェック
+    if ((update && this.seeds.length === 0) || (!update && this.seeds.length !== 0)) {
+      // updating 出ない時はシードを保有していないはずで、updating の時はシードを持っているはず
+      throw new EvalError(`シードのネゴシエートを始める状態ではない`);
+    }
+    // ネゴシエート用の ephemeral data を用意する。ネゴシエートの途中ですでに生成済みならそれを使用し、なければ生成する。
+    let e = this.e;
+    if (e) {
+      // すでにネゴシエータようのデータがあれば、 meta data が一致するかチェック
+      if (
+        e.meta.id !== meta.id ||
+        !(
+          e.meta.devIDs.every((id) => meta.devIDs.includes(id)) &&
+          meta.devIDs.every((id) => e?.meta.devIDs.includes(id))
+        )
+      ) {
+        // meta data はネゴシエートに参加するデバイスの一時的な識別子
+        throw new EvalError(`シードのネゴシエート中に違うメタデータを使用している`);
       }
-    })();
+    } else {
+      // meta データには複数 DH を行う際の相方情報を含める
+      // device List をソートして相方のデバイスを決める (インデックスが一つ前のデバイス);
+      const devList = meta.devIDs.includes(meta.id) ? [...meta.devIDs] : [...meta.devIDs, meta.id];
+      devList.sort();
+      const partner_idx = devList.indexOf(meta.id);
+      const partnerID = devList[partner_idx === 0 ? devList.length - 1 : partner_idx - 1];
+      this.e = {
+        sk: await (await ECPrivKey.gen()).toJWK(),
+        meta: { ...meta, partnerID },
+        idx: this.seeds.length,
+      };
+      e = this.e;
+    }
 
-    if (!seed.e) {
-      throw new EvalError(`ネゴシエート中だが ephemeral data が存在しない`);
-    }
-    if (
-      seed.e.meta.id !== meta.id ||
-      !(
-        seed.e.meta.devIDs.every((id) => meta.devIDs.includes(id)) &&
-        meta.devIDs.every((id) => seed?.e?.meta.devIDs.includes(id))
-      )
-    ) {
-      // ネゴシエート中の meta data が変わっていないかチェックする。
-      // meta data はネゴシエートに参加するデバイスの一時的な識別子
-      throw new EvalError(`シードのネゴシエート中に違うメタデータを使用している`);
-    }
+    const sk = ECPrivKey.fromJWK(e.sk);
     // このデバイスで生成する DH 公開鍵。 0 step は対応する公開鍵そのもの
     const ans: Record<number, ECPubJWK | undefined> = { 0: await (await sk.toECPubKey()).toJWK() };
     // ネゴシエートする
     if (epk) {
-      // device List をソートして相方のデバイスを決める (インデックスが一つ前のデバイス);
-      const devList = meta.devIDs.includes(meta.id) ? [...meta.devIDs] : [...meta.devIDs, meta.id];
-      devList.sort();
-      const idx = devList.indexOf(meta.id);
-      const counterpartDev = devList[idx === 0 ? devList.length - 1 : idx - 1];
       // 相方のデバイスから出てきた epk に自身の sk で DH していく
-      const epk_cp = epk[counterpartDev];
+      const epk_cp = epk[e.meta.partnerID];
       if (epk_cp) {
         // ３台以上のデバイスの場合は複数回 DH を繰り返してうまいことする
         for (const [cs, pk] of Object.entries(epk_cp)) {
@@ -156,7 +138,7 @@ class SeedImple implements SeedDeriver, SeedNegotiator, SeedUpdater {
             continue;
           }
           const c = parseInt(cs);
-          // c がデバイスの数 - 2 回目 より小さい時は DH の結果を他のデバイスに提供する
+          // c が devNum - 2  より小さい時は DH の結果を他のデバイスに提供する
           if (c < meta.devIDs.length - 2) {
             // すでに計算済みかチェック
             const x = epk[meta.id];
@@ -165,12 +147,12 @@ class SeedImple implements SeedDeriver, SeedNegotiator, SeedUpdater {
             }
           } else {
             // デバイスの数 -1 の時は DH の結果がシードの値になる。
-            seed.s = BASE64URL_DECODE((await sk.computeDH(pk)).x);
+            this.seeds.push(BASE64URL_DECODE((await sk.computeDH(pk)).x));
           }
         }
       }
+
       // 自身のデバイスで DH をこれ以上する必要があるかチェックする
-      // 0 ~ devNum -1 まで全てのステップで DH していたら終わり
       // 今回計算した DH
       const computed = [...Object.keys(ans)];
       // 以前に計算していた DH
@@ -179,18 +161,16 @@ class SeedImple implements SeedDeriver, SeedNegotiator, SeedUpdater {
         computed.push(...Object.keys(x));
       }
       // 最後の１ step の DH をしているか
-      if (seed.s) {
+      if (this.seeds.length === e.idx + 1) {
         computed.push(`${meta.devIDs.length - 1}`);
       }
+      // 全てのステップで計算が完了していれば ephemeral data を破棄する
       if (new Set(computed).size === meta.devIDs.length) {
-        seed.e = undefined;
+        this.e = undefined;
       }
     }
-
-    this.seeds.push(seed);
     return {
-      // 他のデバイスのための計算を全て終わらせて (seed.e == null)、かつ自身のデバイスのための計算を全て終わらせていたら (seed.s != null)
-      completion: seed.e == null && seed.s != null,
+      completion: this.e == null,
       epk: ans,
     };
   }
@@ -199,11 +179,7 @@ class SeedImple implements SeedDeriver, SeedNegotiator, SeedUpdater {
     if (this.seeds.length == 0) {
       throw new EvalError(`Seed を保有していない`);
     }
-    const { s } = this.seeds[this.seeds.length - 1];
-    if (!s) {
-      throw new EvalError(`Seed が有効でない`);
-    }
-    return s;
+    return this.seeds[this.seeds.length - 1];
   }
 
   private async OVK(r: Uint8Array, s?: Uint8Array): Promise<ECPrivKey> {
@@ -262,7 +238,7 @@ class SeedImple implements SeedDeriver, SeedNegotiator, SeedUpdater {
     if (!(await this.isUpdating())) {
       throw new EvalError(`Migrating 中ではない`);
     }
-    const { s } = this.seeds[this.seeds.length - 2];
+    const s = this.seeds[this.seeds.length - 2];
     if (!s) {
       throw new EvalError(`Seed が有効でない`);
     }
