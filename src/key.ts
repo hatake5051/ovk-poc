@@ -80,6 +80,17 @@ export class ECPubKey {
       y: this.y('b64u'),
     };
   }
+
+  async verify(m: Uint8Array, s: Uint8Array): Promise<boolean> {
+    const k = await window.crypto.subtle.importKey(
+      'jwk',
+      (await this.toJWK()) as JsonWebKey,
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false,
+      ['verify']
+    );
+    return await window.crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, k, s, m);
+  }
 }
 
 export type ECPirvJWK = { kty: 'EC'; kid?: string; crv: string; x: string; y: string; d: string };
@@ -208,5 +219,17 @@ export class ECPrivKey {
       x: BASE64URL(HexStr2Uint8Array(bp.getX().toString(16, 32), 32)),
       y: BASE64URL(HexStr2Uint8Array(bp.getY().toString(16, 32), 32)),
     };
+  }
+
+  async sign(m: Uint8Array): Promise<Uint8Array> {
+    const k_api = await window.crypto.subtle.importKey(
+      'jwk',
+      (await this.toJWK()) as JsonWebKey,
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false,
+      ['sign']
+    );
+    const sig = await window.crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, k_api, m);
+    return new Uint8Array(sig);
   }
 }

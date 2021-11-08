@@ -1,5 +1,5 @@
-import { ECPubJWK, equalECPubJWK } from 'key';
-import { BASE64URL, BASE64URL_DECODE, UTF8 } from 'utility';
+import { ECPubJWK, ECPubKey, equalECPubJWK } from 'key';
+import { BASE64URL, BASE64URL_DECODE, CONCAT, RandUint8Array, UTF8 } from 'utility';
 
 export function newService(id: string): Service {
   return new Service(id);
@@ -7,92 +7,91 @@ export function newService(id: string): Service {
 
 export class Service {
   private db: Record<string, CredManager | undefined>;
-  private challengeDB: Record<string, string | undefined>;
+  private challengeDB: Record<string, string[]>;
   constructor(private id: string) {
     this.db = {};
     this.challengeDB = {};
   }
 
-  async register(
-    name: string,
-    creds_utf8: string,
-    ovkm: {
-      ovk_jwk: ECPubJWK;
-      r_b64u: string;
-      mac_b64u: string;
-    }
-  ): Promise<boolean> {
-    try {
-      const cm = CredManager.init(creds_utf8, ovkm);
-      this.db[name] = cm;
-      return true;
-    } catch (e) {
-      return false;
-    }
-  }
-
-  async startAuthn(name: string): Promise<{
-    challenge_b64u: string;
-    creds_utf8: string[];
-    ovkm: {
-      ovk_jwk: ECPubJWK;
-      r_b64u: string;
-      mac_b64u: string;
-      next?: {
-        ovk_jwk: ECPubJWK;
-        r_b64u: string;
-        mac_b64u: string;
-      }[];
-    };
-  }> {
+  async startAuthn(name: string): Promise<
+    | { challenge_b64u: string }
+    | {
+        challenge_b64u: string;
+        creds: ECPubJWK[];
+        ovkm: {
+          ovk_jwk: ECPubJWK;
+          r_b64u: string;
+          mac_b64u: string;
+          next?: {
+            ovk_jwk: ECPubJWK;
+            r_b64u: string;
+            mac_b64u: string;
+          }[];
+        };
+      }
+  > {
+    const challenge = RandUint8Array(32);
+    this.challengeDB[name] = [BASE64URL(challenge)];
     const cm = this.db[name];
     if (!cm) {
-      throw new EvalError(`未登録ユーザです`);
+      return { challenge_b64u: BASE64URL(challenge) };
     }
-    const challenge = window.crypto.getRandomValues(new Uint8Array(32));
-    this.challengeDB[name] = BASE64URL(challenge);
     return { challenge_b64u: BASE64URL(challenge), ...cm.getCreds() };
   }
 
-  async seamlessRegister(
+  async register(
     name: string,
-    cred_utf8: string,
-    sig_b64u: string,
-    ov: {
-      sig_b64u: string;
-    }
+    cred: {
+      jwk: ECPubJWK;
+      atts: { sig_b64u: string; key: ECPubJWK };
+    },
+    ovkm: { ovk_jwk: ECPubJWK; r_b64u: string; mac_b64u: string } | { sig_b64u: string }
   ): Promise<boolean> {
-    const cm = this.db[name];
-    if (!cm) {
+    const challenge_b64u = this.challengeDB[name].pop();
+    if (!challenge_b64u) {
       return false;
     }
-    const ovk_jwk = cm.getOVK();
-    const pk_api = await window.crypto.subtle.importKey(
-      'jwk',
-      ovk_jwk,
-      { name: 'ECDSA', namedCurve: 'P-256' },
-      false,
-      ['verify']
-    );
+    // cred のアテステーションを検証する.
+    // 面倒なので アテステーションキーの検証は考慮していない
+    const pk_atts = ECPubKey.fromJWK(cred.atts.key);
     if (
-      !(await window.crypto.subtle.verify(
-        { name: 'ECDSA', hash: 'SHA-256' },
-        pk_api,
-        BASE64URL_DECODE(ov.sig_b64u),
-        UTF8(cred_utf8)
+      !(await pk_atts.verify(
+        CONCAT(BASE64URL_DECODE(challenge_b64u), UTF8(JSON.stringify(cred.jwk))),
+        BASE64URL_DECODE(cred.atts.sig_b64u)
       ))
     ) {
+      // アテステーションの検証に失敗
       return false;
     }
-    if (!cm.add(cred_utf8, ovk_jwk)) {
+
+    let cm = this.db[name];
+    if (!cm) {
+      if ('ovk_jwk' in ovkm) {
+        // アカウント初期登録
+        cm = CredManager.init(cred.jwk, ovkm);
+        this.db[name] = cm;
+        return true;
+      } else {
+        // アカウント新規登録なのに OVK を利用したクレデンシャルの登録をしようとしている
+        return false;
+      }
+    }
+    // アカウントは登録済みなので、 OVK を利用したクレデンシャルの登録を行う
+    if ('ovk_jwk' in ovkm) {
+      // アカウント登録済みなのに、 OVK を追加登録しようとしている
       return false;
     }
-    return this.authn(name, cred_utf8, sig_b64u);
+    const ovk = ECPubKey.fromJWK(cm.getOVK());
+    if (!(await ovk.verify(UTF8(JSON.stringify(cred.jwk)), BASE64URL_DECODE(ovkm.sig_b64u)))) {
+      // OVK を使ってクレデンシャルの検証に失敗
+      return false;
+    }
+    return cm.add(cred.jwk);
   }
 
   async authn(
     name: string,
-    cred_utf8: string,
+    cred_jwk: ECPubJWK,
     sig_b64u: string,
     updating?: {
       update_b64u: string;
@@ -108,28 +107,16 @@ export class Service {
         return false;
       }
     }
-    const challenge_b64u = this.challengeDB[name];
+    const challenge_b64u = this.challengeDB[name].pop();
     if (!challenge_b64u) {
       return false;
     }
-    this.challengeDB[name] = undefined;
     const cm = this.db[name];
-    if (!cm || !cm.isCred(cred_utf8)) {
+    if (!cm || !cm.isCred(cred_jwk)) {
       return false;
     }
-    const key = await window.crypto.subtle.importKey(
-      'raw',
-      UTF8(cred_utf8),
-      { name: 'HMAC', hash: 'SHA-256' },
-      false,
-      ['verify']
-    );
-    return await window.crypto.subtle.verify(
-      'HMAC',
-      key,
-      BASE64URL_DECODE(sig_b64u),
-      BASE64URL_DECODE(challenge_b64u)
-    );
+    const cred = ECPubKey.fromJWK(cred_jwk);
+    return cred.verify(BASE64URL_DECODE(challenge_b64u), BASE64URL_DECODE(sig_b64u));
   }
 
   async update(
@@ -145,48 +132,38 @@ export class Service {
     if (!cm) {
       return false;
     }
-    const ovk_jwk = cm.getOVK();
-    const pk_api = await window.crypto.subtle.importKey(
-      'jwk',
-      ovk_jwk,
-      { name: 'ECDSA', namedCurve: 'P-256' },
-      false,
-      ['verify']
-    );
+    const ovk = ECPubKey.fromJWK(cm.getOVK());
     if (
-      !(await window.crypto.subtle.verify(
-        { name: 'ECDSA', hash: 'SHA-256' },
-        pk_api,
-        BASE64URL_DECODE(update_b64u),
-        UTF8(JSON.stringify(ovkm_next.ovk_jwk))
-      ))
+      !(await ovk.verify(UTF8(JSON.stringify(ovkm_next.ovk_jwk)), BASE64URL_DECODE(update_b64u)))
     ) {
       return false;
     }
+
     return cm.addUpdating(ovkm_next.ovk_jwk, ovkm_next.r_b64u, ovkm_next.mac_b64u);
   }
 }
 
 class CredManager {
   private constructor(
-    private creds_utf8: Record<string, ECPubJWK>,
+    private creds: { jwk: ECPubJWK; ovk: ECPubJWK }[],
     private ovkm: { ovk_jwk: ECPubJWK; r_b64u: string; mac_b64u: string },
     private next?: { ovk_jwk: ECPubJWK; r_b64u: string; mac_b64u: string }[]
   ) {}
 
   static init(
-    cred_utf8: string,
+    cred_jwk: ECPubJWK,
     ovkm: {
       ovk_jwk: ECPubJWK;
       r_b64u: string;
       mac_b64u: string;
     }
   ): CredManager {
-    return new CredManager({ [cred_utf8]: ovkm.ovk_jwk }, ovkm);
+    return new CredManager([{ jwk: cred_jwk, ovk: ovkm.ovk_jwk }], ovkm);
   }
 
-  add(cred_utf8: string, ovk_jwk: ECPubJWK): boolean {
-    this.creds_utf8[cred_utf8] = ovk_jwk;
+  add(cred_jwk: ECPubJWK, ovk_jwk?: ECPubJWK): boolean {
+    const ovk = ovk_jwk ?? this.getOVK();
+    this.creds.push({ jwk: cred_jwk, ovk });
     return true;
   }
 
@@ -201,7 +178,7 @@ class CredManager {
   }
 
   getCreds(): {
-    creds_utf8: string[];
+    creds: ECPubJWK[];
     ovkm: {
       ovk_jwk: ECPubJWK;
       r_b64u: string;
@@ -214,7 +191,7 @@ class CredManager {
     };
   } {
     return {
-      creds_utf8: Object.keys(this.creds_utf8),
+      creds: this.creds.map((c) => c.jwk),
       ovkm: {
         ovk_jwk: this.ovkm.ovk_jwk,
         r_b64u: this.ovkm.r_b64u,
@@ -223,8 +200,8 @@ class CredManager {
       },
     };
   }
-  isCred(cred_utf8: string): boolean {
-    return Object.keys(this.creds_utf8).some((c) => c === cred_utf8);
+  isCred(cred_jwk: ECPubJWK): boolean {
+    return this.creds.some((c) => equalECPubJWK(c.jwk, cred_jwk));
   }
   getOVK(): ECPubJWK {
     return this.ovkm.ovk_jwk;

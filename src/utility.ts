@@ -1,4 +1,13 @@
 /**
+ * 乱数列を生成する。
+ * @param len 生成したいランダム列の長さ(バイト列)
+ * @returns 乱数列
+ */
+export function RandUint8Array(len: number): Uint8Array {
+  return window.crypto.getRandomValues(new Uint8Array(len));
+}
+
+/**
  * 文字列を UTF8 バイトエンコードする。(string to Uint8Array)
  */
 export function UTF8(STRING: string): Uint8Array {
