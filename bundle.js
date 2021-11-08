@@ -102,13 +102,13 @@ class Device {
         this.seed = seed;
         this.negotiating = negotiating;
     }
-    async initSeedNegotiation(pw, devID, partnerID, devNum) {
+    async initSeedNegotiation(pw, devID, partnerID, devNum, updating = false) {
         this.negotiating = { pw, devID, devNum, partnerID, epk: { mine: {}, partner: {} } };
-        const { epk } = await this.seed.negotiate({ id: devID, partnerID, devNum });
+        const { epk } = await this.seed.negotiate({ id: devID, partnerID, devNum }, undefined, updating);
         const m = UTF8(this.negotiating.devID + '.' + JSON.stringify(epk));
         return PBES2JWE.compact(this.negotiating.pw, m);
     }
-    async seedNegotiating(ciphertext) {
+    async seedNegotiating(ciphertext, updating = false) {
         if (!this.negotiating) {
             throw new EvalError(`シードのネゴシエーション初期化を行っていない`);
         }
@@ -131,7 +131,7 @@ class Device {
             id: this.negotiating.devID,
             partnerID: this.negotiating.partnerID,
             devNum: this.negotiating.devNum,
-        }, this.negotiating.epk);
+        }, this.negotiating.epk, updating);
         Object.assign(this.negotiating.epk.mine, epk_computed);
         const m_computed = UTF8(this.negotiating.devID + '.' + JSON.stringify(this.negotiating.epk.mine));
         const ciphertext_ans = await PBES2JWE.compact(this.negotiating.pw, m_computed);
@@ -9030,53 +9030,48 @@ class CredManager {
     //     })();
     //   }
     // }
-    // console.group('シードの更新を行う');
-    // await (async () => {
-    //   // シード共有する際の DH 公開鍵を一時的に保存するストア
-    //   const epk: Record<string, Record<number, ECPubJWK | undefined> | undefined> = {};
-    //   // シードの共有が完了していないデバイスリスト
-    //   let dl = [...devList];
-    //   // シードの共有のプロセスを実行するデバイス（インデックス）
-    //   let i = -1;
-    //   // 全てのデバイスでシードの共有が終わるまで以下を繰り返す。
-    //   while (dl.length !== 0) {
-    //     // // 最短で行くなら次のデバイスを触るのが良い (dev.length * 2 -1 でいける)
-    //     // const r = (i + 1) % dl.length;
-    //     // 操作するデバイスは以前操作していない未完了デバイスのいずれかにしてみた;
-    //     const r = Math.floor(Math.random() * dl.length);
-    //     if (r === i && dl.length !== 1) {
-    //       continue;
-    //     }
-    //     i = r;
-    //     const devname = dl[i];
-    //     console.log(`Dev(${devname}) process negotiation...`);
-    //     await (async () => {
-    //       const seed = Devices[devname].seed;
-    //       const { completion, epk: epk_computed } = await seed.negotiate(
-    //         { id: devname, devIDs: devList },
-    //         epk,
-    //         true
-    //       );
-    //       if (completion) {
-    //         // 完了した場合は dl から消去する。インデックスを新しい配列の長さと揃えるために -1 している。
-    //         dl = dl.filter((n) => n !== devname);
-    //         i--;
-    //         console.log(`${devname} はシードの共有完了, remains: ${dl}`);
-    //       }
-    //       let x = epk[devname];
-    //       if (!x) {
-    //         x = {};
-    //       }
-    //       for (const [c, k] of Object.entries(epk_computed)) {
-    //         x[parseInt(c)] = k;
-    //       }
-    //       epk[devname] = x;
-    //     })();
-    //   }
-    //   console.log(`全てのデバイスでシードの共有が完了した`);
-    //   console.log(`共有にあたって公開された情報->`, epk);
-    // })();
-    // console.groupEnd();
+    console.group('シードの更新を行う');
+    await (async () => {
+        // デバイスでシードネゴシエートする間、各デバイスで計算した DH 値を公開する場所
+        const bbs = devList.reduce((obj, devname) => {
+            obj[devname] = '';
+            return obj;
+        }, {});
+        // まずは各デバイスで seed ネゴシエーションの初期化を行う;
+        for (const devname of devList) {
+            // id はネゴシエーション中に一意に識別できたら良い
+            const ciphertext = await Devices[devname].initSeedNegotiation('dummy-password-updating', `${devname}-tmp-updating`, `${partnerDevName(devname)}-tmp-updating`, devList.length, true);
+            // 初期 DH 公開鍵を公開する
+            bbs[devname] = ciphertext;
+        }
+        // シードの共有が完了していないデバイスリスト
+        let dl = [...devList];
+        // シードの共有のプロセスを実行するデバイス（インデックス）
+        let i = -1;
+        // 全てのデバイスでシードの共有が終わるまで以下を繰り返す。
+        while (dl.length !== 0) {
+            // // 最短で行くなら次のデバイスを触るのが良い
+            const r = (i + 1) % dl.length;
+            i = r;
+            const devname = dl[i];
+            console.log(`Dev(${devname}) process negotiation...`);
+            await (async () => {
+                // 相方の公開 DH 値をとってきて自身の秘密鍵と一緒に計算する
+                const { completion, ciphertext } = await Devices[devname].seedNegotiating(bbs[partnerDevName(devname)], true);
+                // 計算した結果を公開する
+                bbs[devname] = ciphertext;
+                if (completion) {
+                    // 完了した場合は dl から消去する。インデックスを新しい配列の長さと揃えるために -1 している。
+                    dl = dl.filter((n) => n !== devname);
+                    i--;
+                    console.log(`${devname} はシードの共有完了, remains: ${dl}`);
+                }
+            })();
+        }
+        console.log(`全てのデバイスでシードの共有が完了した`);
+        console.log(`ネゴシエート中の通信路`, bbs);
+    })();
+    console.groupEnd();
     // for (const svc in svcIDs) {
     //   const Svc = Services[svc];
     //   for (const devname of [...devList, ...devList]) {

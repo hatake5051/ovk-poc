@@ -21,15 +21,23 @@ export class Device {
     pw: string,
     devID: string,
     partnerID: string,
-    devNum: number
+    devNum: number,
+    updating = false
   ): Promise<string> {
     this.negotiating = { pw, devID, devNum, partnerID, epk: { mine: {}, partner: {} } };
-    const { epk } = await this.seed.negotiate({ id: devID, partnerID, devNum });
+    const { epk } = await this.seed.negotiate(
+      { id: devID, partnerID, devNum },
+      undefined,
+      updating
+    );
     const m = UTF8(this.negotiating.devID + '.' + JSON.stringify(epk));
     return PBES2JWE.compact(this.negotiating.pw, m);
   }
 
-  async seedNegotiating(ciphertext: string): Promise<{ completion: boolean; ciphertext: string }> {
+  async seedNegotiating(
+    ciphertext: string,
+    updating = false
+  ): Promise<{ completion: boolean; ciphertext: string }> {
     if (!this.negotiating) {
       throw new EvalError(`シードのネゴシエーション初期化を行っていない`);
     }
@@ -55,7 +63,8 @@ export class Device {
         partnerID: this.negotiating.partnerID,
         devNum: this.negotiating.devNum,
       },
-      this.negotiating.epk
+      this.negotiating.epk,
+      updating
     );
     Object.assign(this.negotiating.epk.mine, epk_computed);
     const m_computed = UTF8(
