@@ -4,7 +4,7 @@ import { BASE64URL_DECODE, CONCAT, UTF8 } from 'utility';
 export type Seed = SeedDeriver & SeedNegotiator & SeedUpdater;
 
 export function newSeed(): Seed {
-  return new SeedImple();
+  return new SeedImpl();
 }
 
 /**
@@ -19,29 +19,26 @@ interface SeedDeriver {
   deriveOVK(r: Uint8Array): Promise<ECPubKey>;
   /**
    * OVK を特定のサービスに対して生成したことを検証できる MAC を計算する。
-   * @param OVK  Ownership Verification Public Key でこれに対応する秘密鍵をシードは内部で識別できる。
    * @param r OVK を導出する際に用いた乱数
    * @param svcID 登録先のサービス識別子 (dns 名)
    * @returns OVK の秘密鍵で (r || UTF8(svcID)) に対して計算した MAC
    */
-  macOVK(OVK: ECPubKey, r: Uint8Array, svcID: string): Promise<Uint8Array>;
+  macOVK(r: Uint8Array, svcID: string): Promise<Uint8Array>;
   /**
    * OVK がこのサービスのために他のデバイスで生成されたかを MAC を用いて検証する。
-   * @param OVK Ownership Verification Public Key でこれに対応する秘密鍵をシードは内部で識別できる。
    * @param r OVK を導出するために用いた乱数
    * @param svcID 登録先のサービス識別子 (dns 名)
    * @param MAC サービスから取得した MAC
    * @returns 検証に成功すれば true
    */
-  verifyOVK(OVK: ECPubKey, r: Uint8Array, svcID: string, MAC: Uint8Array): Promise<boolean>;
+  verifyOVK(r: Uint8Array, svcID: string, MAC: Uint8Array): Promise<boolean>;
   /**
    * OVK を用いてクレデンシャルに署名する。
-   * @param OVK OVPubK でこれに対応する秘密鍵をシードは内部で識別できる。
    * @param r OVK を導出する際に用いた乱数
    * @param cred OVPrivK が署名するクレデンシャル
    * @returns OVK の秘密鍵で cred に対して計算した署名
    */
-  signOVK(OVK: ECPubKey, r: Uint8Array, cred: Uint8Array): Promise<Uint8Array>;
+  signOVK(r: Uint8Array, cred: Uint8Array): Promise<Uint8Array>;
 }
 
 /**
@@ -58,8 +55,11 @@ interface SeedNegotiator {
    * epk は公開する DH 公開鍵情報
    */
   negotiate(
-    meta: { id: string; devIDs: string[] },
-    epk?: Record<string, Record<number, ECPubJWK | undefined> | undefined>,
+    meta: { id: string; partnerID: string; devNum: number },
+    epk?: {
+      mine?: Record<number, ECPubJWK | undefined>;
+      partner?: Record<number, ECPubJWK | undefined>;
+    },
     update?: boolean
   ): Promise<{
     completion: boolean;
@@ -72,19 +72,22 @@ interface SeedUpdater {
   update(prevR: Uint8Array, nextOVK: ECPubKey): Promise<Uint8Array>;
 }
 
-class SeedImple implements SeedDeriver, SeedNegotiator, SeedUpdater {
+class SeedImpl implements SeedDeriver, SeedNegotiator, SeedUpdater {
   constructor(
     private seeds: Uint8Array[] = [],
     private e?: {
-      meta: { id: string; devIDs: string[]; partnerID: string };
+      meta: { id: string; partnerID: string; devNum: number };
       sk: ECPirvJWK;
       idx: number;
     }
   ) {}
 
   async negotiate(
-    meta: { id: string; devIDs: string[] },
-    epk?: Record<string, Record<number, ECPubJWK | undefined> | undefined>,
+    meta: { id: string; partnerID: string; devNum: number },
+    epk?: {
+      mine?: Record<number, ECPubJWK | undefined>;
+      partner?: Record<number, ECPubJWK | undefined>;
+    },
     update = false
   ): Promise<{
     completion: boolean;
@@ -101,24 +104,16 @@ class SeedImple implements SeedDeriver, SeedNegotiator, SeedUpdater {
       // すでにネゴシエータようのデータがあれば、 meta data が一致するかチェック
       if (
         e.meta.id !== meta.id ||
-        !(
-          e.meta.devIDs.every((id) => meta.devIDs.includes(id)) &&
-          meta.devIDs.every((id) => e?.meta.devIDs.includes(id))
-        )
+        e.meta.partnerID !== meta.partnerID ||
+        e.meta.devNum !== meta.devNum
       ) {
         // meta data はネゴシエートに参加するデバイスの一時的な識別子
         throw new EvalError(`シードのネゴシエート中に違うメタデータを使用している`);
       }
     } else {
-      // meta データには複数 DH を行う際の相方情報を含める
-      // device List をソートして相方のデバイスを決める (インデックスが一つ前のデバイス);
-      const devList = meta.devIDs.includes(meta.id) ? [...meta.devIDs] : [...meta.devIDs, meta.id];
-      devList.sort();
-      const partner_idx = devList.indexOf(meta.id);
-      const partnerID = devList[partner_idx === 0 ? devList.length - 1 : partner_idx - 1];
       this.e = {
         sk: await (await ECPrivKey.gen()).toJWK(),
-        meta: { ...meta, partnerID },
+        meta,
         idx: this.seeds.length,
       };
       e = this.e;
@@ -130,19 +125,17 @@ class SeedImple implements SeedDeriver, SeedNegotiator, SeedUpdater {
     // ネゴシエートする
     if (epk) {
       // 相方のデバイスから出てきた epk に自身の sk で DH していく
-      const epk_cp = epk[e.meta.partnerID];
-      if (epk_cp) {
+      if (epk.partner) {
         // ３台以上のデバイスの場合は複数回 DH を繰り返してうまいことする
-        for (const [cs, pk] of Object.entries(epk_cp)) {
+        for (const [cs, pk] of Object.entries(epk.partner)) {
           if (!pk) {
             continue;
           }
           const c = parseInt(cs);
           // c が devNum - 2  より小さい時は DH の結果を他のデバイスに提供する
-          if (c < meta.devIDs.length - 2) {
+          if (c < meta.devNum - 2) {
             // すでに計算済みかチェック
-            const x = epk[meta.id];
-            if (!x || !x[c + 1]) {
+            if (!epk.mine || !epk.mine[c + 1]) {
               ans[c + 1] = await sk.computeDH(pk);
             }
           } else {
@@ -156,16 +149,15 @@ class SeedImple implements SeedDeriver, SeedNegotiator, SeedUpdater {
       // 今回計算した DH
       const computed = [...Object.keys(ans)];
       // 以前に計算していた DH
-      const x = epk[meta.id];
-      if (x) {
-        computed.push(...Object.keys(x));
+      if (epk.mine) {
+        computed.push(...Object.keys(epk.mine));
       }
       // 最後の１ step の DH をしているか
       if (this.seeds.length === e.idx + 1) {
-        computed.push(`${meta.devIDs.length - 1}`);
+        computed.push(`${meta.devNum - 1}`);
       }
       // 全てのステップで計算が完了していれば ephemeral data を破棄する
-      if (new Set(computed).size === meta.devIDs.length) {
+      if (new Set(computed).size === meta.devNum) {
         this.e = undefined;
       }
     }
@@ -192,7 +184,7 @@ class SeedImple implements SeedDeriver, SeedNegotiator, SeedUpdater {
     return sk.toECPubKey();
   }
 
-  async macOVK(OVK: ECPubKey, r: Uint8Array, svcID: string): Promise<Uint8Array> {
+  async macOVK(r: Uint8Array, svcID: string): Promise<Uint8Array> {
     const sk = await this.OVK(r);
     const sk_api = await window.crypto.subtle.importKey(
       'raw',
@@ -205,7 +197,7 @@ class SeedImple implements SeedDeriver, SeedNegotiator, SeedUpdater {
     return new Uint8Array(mac);
   }
 
-  async verifyOVK(OVK: ECPubKey, r: Uint8Array, svcID: string, MAC: Uint8Array): Promise<boolean> {
+  async verifyOVK(r: Uint8Array, svcID: string, MAC: Uint8Array): Promise<boolean> {
     const sk = await this.OVK(r);
     const sk_api = await window.crypto.subtle.importKey(
       'raw',
@@ -217,7 +209,7 @@ class SeedImple implements SeedDeriver, SeedNegotiator, SeedUpdater {
     return await window.crypto.subtle.verify('HMAC', sk_api, MAC, CONCAT(r, UTF8(svcID)));
   }
 
-  async signOVK(OVK: ECPubKey, r: Uint8Array, cred: Uint8Array): Promise<Uint8Array> {
+  async signOVK(r: Uint8Array, cred: Uint8Array): Promise<Uint8Array> {
     const sk = await this.OVK(r);
     const sk_api = await window.crypto.subtle.importKey(
       'jwk',

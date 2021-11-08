@@ -1,5 +1,202 @@
 'use strict';
 
+/**
+ * 文字列を UTF8 バイトエンコードする。(string to Uint8Array)
+ */
+function UTF8(STRING) {
+    const encoder = new TextEncoder();
+    return encoder.encode(STRING);
+}
+/**
+ * 文字列に UTF8 バイトデコードする (Uint8Array to string)
+ */
+function UTF8_DECODE(OCTETS) {
+    const decoder = new TextDecoder();
+    return decoder.decode(OCTETS);
+}
+/**
+ * 文字列を ASCII バイトエンコードする。 (string to Uint8Array)
+ */
+function ASCII(STRING) {
+    const b = new Uint8Array(STRING.length);
+    for (let i = 0; i < STRING.length; i++) {
+        b[i] = STRING.charCodeAt(i);
+    }
+    return b;
+}
+/**
+ * バイト列を BASE64URL エンコードする (Uint8Array to string)
+ */
+function BASE64URL(OCTETS) {
+    // window 組み込みの base64 encode 関数
+    // 組み込みの関数は引数としてバイナリ文字列を要求するため
+    // Uint8Array をバイナリ文字列へと変換する
+    const b_str = String.fromCharCode(...OCTETS);
+    const base64_encode = window.btoa(b_str);
+    return (base64_encode
+        // 文字「+」は全て「-」へ変換する
+        .replaceAll('+', '-')
+        // 文字「/」は全て「_」へ変換する
+        .replaceAll('/', '_')
+        // 4の倍数にするためのパディング文字は全て消去
+        .replaceAll('=', ''));
+}
+/**
+ * バイト列に BASE64URL デコードする (string to Uint8Array)
+ */
+function BASE64URL_DECODE(STRING) {
+    const url_decode = STRING
+        // URL-safe にするために変換した文字たちを戻す
+        .replaceAll('-', '+')
+        .replaceAll('_', '/')
+        // 文字列長が4の倍数になるように padding文字で埋める
+        .padEnd(Math.ceil(STRING.length / 4) * 4, '=');
+    // window 組み込みの base64 decode 関数
+    // この関数はデコードの結果をバイナリ文字列として出力する
+    const b_str = window.atob(url_decode);
+    // バイナリ文字列を Uint8Array に変換する
+    const b = new Uint8Array(b_str.length);
+    for (let i = 0; i < b_str.length; i++) {
+        b[i] = b_str.charCodeAt(i);
+    }
+    return b;
+}
+function HexStr2Uint8Array(hexstr, len) {
+    let ans_str = hexstr;
+    if (hexstr.length < len * 2) {
+        ans_str = '0'.repeat(len * 2 - hexstr.length) + hexstr;
+    }
+    const ans_length = ans_str.length / 2;
+    const ans = new Uint8Array(ans_length);
+    for (let i = 0; i < ans_length; i++) {
+        ans[i] = parseInt(ans_str.substr(i * 2, 2), 16);
+    }
+    return ans;
+}
+function Uint8Array2HexStr(arr, len) {
+    const str_arr = Array.from(arr).map(function (e) {
+        let hexchar = e.toString(16);
+        if (hexchar.length == 1) {
+            hexchar = '0' + hexchar;
+        }
+        return hexchar;
+    });
+    let ans = str_arr.join('');
+    if (ans.length < len * 2) {
+        ans = '0'.repeat(len * 2 - ans.length) + ans;
+    }
+    return ans;
+}
+/**
+ * ２つのバイト列を結合する
+ */
+function CONCAT(A, B) {
+    const ans = new Uint8Array(A.length + B.length);
+    ans.set(A);
+    ans.set(B, A.length);
+    return ans;
+}
+
+class Device {
+    constructor(seed, negotiating) {
+        this.seed = seed;
+        this.negotiating = negotiating;
+    }
+    async initSeedNegotiation(pw, devID, partnerID, devNum) {
+        this.negotiating = { pw, devID, devNum, partnerID, epk: { mine: {}, partner: {} } };
+        const { epk } = await this.seed.negotiate({ id: devID, partnerID, devNum });
+        const m = UTF8(this.negotiating.devID + '.' + JSON.stringify(epk));
+        return PBES2JWE.compact(this.negotiating.pw, m);
+    }
+    async seedNegotiating(ciphertext) {
+        if (!this.negotiating) {
+            throw new EvalError(`シードのネゴシエーション初期化を行っていない`);
+        }
+        let m_received;
+        try {
+            m_received = await PBES2JWE.dec(this.negotiating.pw, ciphertext);
+        }
+        catch {
+            throw new EvalError(`Ciphertext の復号に失敗`);
+        }
+        const l = UTF8_DECODE(m_received).split('.');
+        if (l.length !== 2) {
+            throw new EvalError(`message フォーマットエラー`);
+        }
+        const [devID_received, epk_received] = l;
+        if (devID_received === this.negotiating.partnerID) {
+            Object.assign(this.negotiating.epk.partner, JSON.parse(epk_received));
+        }
+        const { completion, epk: epk_computed } = await this.seed.negotiate({
+            id: this.negotiating.devID,
+            partnerID: this.negotiating.partnerID,
+            devNum: this.negotiating.devNum,
+        }, this.negotiating.epk);
+        Object.assign(this.negotiating.epk.mine, epk_computed);
+        const m_computed = UTF8(this.negotiating.devID + '.' + JSON.stringify(this.negotiating.epk.mine));
+        const ciphertext_ans = await PBES2JWE.compact(this.negotiating.pw, m_computed);
+        if (completion) {
+            this.negotiating = undefined;
+        }
+        return { completion, ciphertext: ciphertext_ans };
+    }
+}
+const PBES2JWE = {
+    async compact(pw, m) {
+        // PBES2 用の JOSE Header を用意して
+        const header = {
+            alg: 'PBES2-HS256+A128KW',
+            enc: 'A128GCM',
+            p2c: 1000,
+            p2s: BASE64URL(window.crypto.getRandomValues(new Uint8Array(16))),
+        };
+        const header_b64u = BASE64URL(UTF8(JSON.stringify(header)));
+        // Content Encryption Key を乱数生成する
+        const cek = window.crypto.getRandomValues(new Uint8Array(16));
+        const cek_api = await window.crypto.subtle.importKey('raw', cek, 'AES-GCM', true, ['encrypt']);
+        // CEK を使って m を暗号化
+        const iv = window.crypto.getRandomValues(new Uint8Array(12));
+        const e = new Uint8Array(await window.crypto.subtle.encrypt({
+            name: 'AES-GCM',
+            iv,
+            additionalData: ASCII(header_b64u),
+        }, cek_api, m));
+        const ciphertext = e.slice(0, e.length - 16);
+        const atag = e.slice(e.length - 16);
+        // PBES2 で導出した鍵で CEK をラップして Encrypted Key を生成する
+        const dk_api = await window.crypto.subtle.importKey('raw', await window.crypto.subtle.deriveBits({
+            name: 'PBKDF2',
+            hash: 'SHA-256',
+            salt: CONCAT(CONCAT(UTF8(header.alg), new Uint8Array([0])), BASE64URL_DECODE(header.p2s)),
+            iterations: header.p2c,
+        }, await window.crypto.subtle.importKey('raw', UTF8(pw), 'PBKDF2', false, ['deriveBits']), 128), { name: 'AES-KW' }, false, ['wrapKey']);
+        const ek = new Uint8Array(await window.crypto.subtle.wrapKey('raw', cek_api, dk_api, { name: 'AES-KW' }));
+        const ek_b64u = BASE64URL(ek);
+        return `${header_b64u}.${ek_b64u}.${BASE64URL(iv)}.${BASE64URL(ciphertext)}.${BASE64URL(atag)}`;
+    },
+    async dec(pw, compact) {
+        const l = compact.split('.');
+        if (l.length !== 5) {
+            throw new EvalError('JWE Compact Serialization の形式ではない');
+        }
+        const [h_b64u, ek_b64u, iv_b64u, c_b64u, atag_b64u] = l;
+        const header = JSON.parse(UTF8_DECODE(BASE64URL_DECODE(h_b64u)));
+        // PBES2 で導出した鍵で EK をアンラップして CEK を得る
+        const dk_api = await window.crypto.subtle.importKey('raw', await window.crypto.subtle.deriveBits({
+            name: 'PBKDF2',
+            hash: 'SHA-256',
+            salt: CONCAT(CONCAT(UTF8(header.alg), new Uint8Array([0])), BASE64URL_DECODE(header.p2s)),
+            iterations: header.p2c,
+        }, await window.crypto.subtle.importKey('raw', UTF8(pw), 'PBKDF2', false, ['deriveBits']), 128), { name: 'AES-KW' }, false, ['unwrapKey']);
+        const cek_api = await window.crypto.subtle.unwrapKey('raw', BASE64URL_DECODE(ek_b64u), dk_api, {
+            name: 'AES-KW',
+        }, 'AES-GCM', true, ['decrypt']);
+        // CEK を使って ciphertext と authentication tag から平文を復号し整合性を検証する
+        const e = await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv: BASE64URL_DECODE(iv_b64u), additionalData: ASCII(h_b64u) }, cek_api, CONCAT(BASE64URL_DECODE(c_b64u), BASE64URL_DECODE(atag_b64u)));
+        return new Uint8Array(e);
+    },
+};
+
 var commonjsGlobal = typeof globalThis !== 'undefined' ? globalThis : typeof window !== 'undefined' ? window : typeof global !== 'undefined' ? global : typeof self !== 'undefined' ? self : {};
 
 var bn = {exports: {}};
@@ -8162,93 +8359,6 @@ elliptic.ec = ec;
 elliptic.eddsa = eddsa;
 }(elliptic));
 
-/**
- * 文字列を UTF8 バイトエンコードする。(string to Uint8Array)
- */
-function UTF8(STRING) {
-    const encoder = new TextEncoder();
-    return encoder.encode(STRING);
-}
-/**
- * 文字列に UTF8 バイトデコードする (Uint8Array to string)
- */
-function UTF8_DECODE(OCTETS) {
-    const decoder = new TextDecoder();
-    return decoder.decode(OCTETS);
-}
-/**
- * バイト列を BASE64URL エンコードする (Uint8Array to string)
- */
-function BASE64URL(OCTETS) {
-    // window 組み込みの base64 encode 関数
-    // 組み込みの関数は引数としてバイナリ文字列を要求するため
-    // Uint8Array をバイナリ文字列へと変換する
-    const b_str = String.fromCharCode(...OCTETS);
-    const base64_encode = window.btoa(b_str);
-    return (base64_encode
-        // 文字「+」は全て「-」へ変換する
-        .replaceAll('+', '-')
-        // 文字「/」は全て「_」へ変換する
-        .replaceAll('/', '_')
-        // 4の倍数にするためのパディング文字は全て消去
-        .replaceAll('=', ''));
-}
-/**
- * バイト列に BASE64URL デコードする (string to Uint8Array)
- */
-function BASE64URL_DECODE(STRING) {
-    const url_decode = STRING
-        // URL-safe にするために変換した文字たちを戻す
-        .replaceAll('-', '+')
-        .replaceAll('_', '/')
-        // 文字列長が4の倍数になるように padding文字で埋める
-        .padEnd(Math.ceil(STRING.length / 4) * 4, '=');
-    // window 組み込みの base64 decode 関数
-    // この関数はデコードの結果をバイナリ文字列として出力する
-    const b_str = window.atob(url_decode);
-    // バイナリ文字列を Uint8Array に変換する
-    const b = new Uint8Array(b_str.length);
-    for (let i = 0; i < b_str.length; i++) {
-        b[i] = b_str.charCodeAt(i);
-    }
-    return b;
-}
-function HexStr2Uint8Array(hexstr, len) {
-    let ans_str = hexstr;
-    if (hexstr.length < len * 2) {
-        ans_str = '0'.repeat(len * 2 - hexstr.length) + hexstr;
-    }
-    const ans_length = ans_str.length / 2;
-    const ans = new Uint8Array(ans_length);
-    for (let i = 0; i < ans_length; i++) {
-        ans[i] = parseInt(ans_str.substr(i * 2, 2), 16);
-    }
-    return ans;
-}
-function Uint8Array2HexStr(arr, len) {
-    const str_arr = Array.from(arr).map(function (e) {
-        let hexchar = e.toString(16);
-        if (hexchar.length == 1) {
-            hexchar = '0' + hexchar;
-        }
-        return hexchar;
-    });
-    let ans = str_arr.join('');
-    if (ans.length < len * 2) {
-        ans = '0'.repeat(len * 2 - ans.length) + ans;
-    }
-    return ans;
-}
-/**
- * ２つのバイト列を結合する
- */
-function CONCAT(A, B) {
-    const ans = new Uint8Array(A.length + B.length);
-    ans.set(A);
-    ans.set(B, A.length);
-    return ans;
-}
-
 const p256 = new elliptic.ec('p256');
 function equalECPubJWK(l, r) {
     if (!l && !r)
@@ -8418,9 +8528,9 @@ class ECPrivKey {
 }
 
 function newSeed() {
-    return new SeedImple();
+    return new SeedImpl();
 }
-class SeedImple {
+class SeedImpl {
     constructor(seeds = [], e) {
         this.seeds = seeds;
         this.e = e;
@@ -8436,22 +8546,16 @@ class SeedImple {
         if (e) {
             // すでにネゴシエータようのデータがあれば、 meta data が一致するかチェック
             if (e.meta.id !== meta.id ||
-                !(e.meta.devIDs.every((id) => meta.devIDs.includes(id)) &&
-                    meta.devIDs.every((id) => e?.meta.devIDs.includes(id)))) {
+                e.meta.partnerID !== meta.partnerID ||
+                e.meta.devNum !== meta.devNum) {
                 // meta data はネゴシエートに参加するデバイスの一時的な識別子
                 throw new EvalError(`シードのネゴシエート中に違うメタデータを使用している`);
             }
         }
         else {
-            // meta データには複数 DH を行う際の相方情報を含める
-            // device List をソートして相方のデバイスを決める (インデックスが一つ前のデバイス);
-            const devList = meta.devIDs.includes(meta.id) ? [...meta.devIDs] : [...meta.devIDs, meta.id];
-            devList.sort();
-            const partner_idx = devList.indexOf(meta.id);
-            const partnerID = devList[partner_idx === 0 ? devList.length - 1 : partner_idx - 1];
             this.e = {
                 sk: await (await ECPrivKey.gen()).toJWK(),
-                meta: { ...meta, partnerID },
+                meta,
                 idx: this.seeds.length,
             };
             e = this.e;
@@ -8462,19 +8566,17 @@ class SeedImple {
         // ネゴシエートする
         if (epk) {
             // 相方のデバイスから出てきた epk に自身の sk で DH していく
-            const epk_cp = epk[e.meta.partnerID];
-            if (epk_cp) {
+            if (epk.partner) {
                 // ３台以上のデバイスの場合は複数回 DH を繰り返してうまいことする
-                for (const [cs, pk] of Object.entries(epk_cp)) {
+                for (const [cs, pk] of Object.entries(epk.partner)) {
                     if (!pk) {
                         continue;
                     }
                     const c = parseInt(cs);
                     // c が devNum - 2  より小さい時は DH の結果を他のデバイスに提供する
-                    if (c < meta.devIDs.length - 2) {
+                    if (c < meta.devNum - 2) {
                         // すでに計算済みかチェック
-                        const x = epk[meta.id];
-                        if (!x || !x[c + 1]) {
+                        if (!epk.mine || !epk.mine[c + 1]) {
                             ans[c + 1] = await sk.computeDH(pk);
                         }
                     }
@@ -8488,16 +8590,15 @@ class SeedImple {
             // 今回計算した DH
             const computed = [...Object.keys(ans)];
             // 以前に計算していた DH
-            const x = epk[meta.id];
-            if (x) {
-                computed.push(...Object.keys(x));
+            if (epk.mine) {
+                computed.push(...Object.keys(epk.mine));
             }
             // 最後の１ step の DH をしているか
             if (this.seeds.length === e.idx + 1) {
-                computed.push(`${meta.devIDs.length - 1}`);
+                computed.push(`${meta.devNum - 1}`);
             }
             // 全てのステップで計算が完了していれば ephemeral data を破棄する
-            if (new Set(computed).size === meta.devIDs.length) {
+            if (new Set(computed).size === meta.devNum) {
                 this.e = undefined;
             }
         }
@@ -8520,18 +8621,18 @@ class SeedImple {
         const sk = await this.OVK(r);
         return sk.toECPubKey();
     }
-    async macOVK(OVK, r, svcID) {
+    async macOVK(r, svcID) {
         const sk = await this.OVK(r);
         const sk_api = await window.crypto.subtle.importKey('raw', sk.d('oct'), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
         const mac = await window.crypto.subtle.sign('HMAC', sk_api, CONCAT(r, UTF8(svcID)));
         return new Uint8Array(mac);
     }
-    async verifyOVK(OVK, r, svcID, MAC) {
+    async verifyOVK(r, svcID, MAC) {
         const sk = await this.OVK(r);
         const sk_api = await window.crypto.subtle.importKey('raw', sk.d('oct'), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
         return await window.crypto.subtle.verify('HMAC', sk_api, MAC, CONCAT(r, UTF8(svcID)));
     }
-    async signOVK(OVK, r, cred) {
+    async signOVK(r, cred) {
         const sk = await this.OVK(r);
         const sk_api = await window.crypto.subtle.importKey('jwk', await sk.toJWK(), { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
         const sig = await window.crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, sk_api, cred);
@@ -8676,7 +8777,7 @@ class CredManager {
 }
 
 (async () => {
-    // Service と Device のセットアップ
+    // Service の用意
     const svcIDs = {
         svc1: 'svc1.example',
         svc2: 'svc2.example',
@@ -8686,361 +8787,483 @@ class CredManager {
     for (const svc in svcIDs) {
         Services[svc] = newService(svcIDs[svc]);
     }
+    // Device の用意
     const devList = ['devA', 'devB', 'devC', 'devD'];
-    const Devices = {};
-    for (const devname of devList) {
-        Devices[devname] = { seed: newSeed(), creds: {} };
-    }
+    const partnerDevName = (devname) => {
+        // multiparty DH 鍵共有を行う際の相方情報を含める
+        // device List をソートして相方のデバイスを決める (インデックスが一つ前のデバイス);
+        const partner_idx = devList.indexOf(devname);
+        const partnerDevName = devList[partner_idx === 0 ? devList.length - 1 : partner_idx - 1];
+        return partnerDevName;
+    };
+    const Devices = devList.reduce((obj, devname) => {
+        obj[devname] = new Device(newSeed());
+        return obj;
+    }, {});
     console.group('シードの共有を行う');
     await (async () => {
-        // シード共有する際の DH 公開鍵を一時的に保存するストア
-        const epk = {};
+        // デバイスでシードネゴシエートする間、各デバイスで計算した DH 値を公開する場所
+        const bbs = devList.reduce((obj, devname) => {
+            obj[devname] = '';
+            return obj;
+        }, {});
+        // まずは各デバイスで seed ネゴシエーションの初期化を行う;
+        for (const devname of devList) {
+            // id はネゴシエーション中に一意に識別できたら良い
+            const ciphertext = await Devices[devname].initSeedNegotiation('dummy-password', `${devname}-tmp`, `${partnerDevName(devname)}-tmp`, devList.length);
+            // 初期 DH 公開鍵を公開する
+            bbs[devname] = ciphertext;
+        }
         // シードの共有が完了していないデバイスリスト
         let dl = [...devList];
         // シードの共有のプロセスを実行するデバイス（インデックス）
         let i = -1;
         // 全てのデバイスでシードの共有が終わるまで以下を繰り返す。
         while (dl.length !== 0) {
-            // // 最短で行くなら次のデバイスを触るのが良い (dev.length * 2 -1 でいける)
+            // // 最短で行くなら次のデバイスを触るのが良い
             const r = (i + 1) % dl.length;
             i = r;
             const devname = dl[i];
             console.log(`Dev(${devname}) process negotiation...`);
             await (async () => {
-                const seed = Devices[devname].seed;
-                const { completion, epk: epk_computed } = await seed.negotiate({ id: devname, devIDs: devList }, epk);
+                // 相方の公開 DH 値をとってきて自身の秘密鍵と一緒に計算する
+                const { completion, ciphertext } = await Devices[devname].seedNegotiating(bbs[partnerDevName(devname)]);
+                // 計算した結果を公開する
+                bbs[devname] = ciphertext;
                 if (completion) {
                     // 完了した場合は dl から消去する。インデックスを新しい配列の長さと揃えるために -1 している。
                     dl = dl.filter((n) => n !== devname);
                     i--;
                     console.log(`${devname} はシードの共有完了, remains: ${dl}`);
                 }
-                let x = epk[devname];
-                if (!x) {
-                    x = {};
-                }
-                for (const [c, k] of Object.entries(epk_computed)) {
-                    x[parseInt(c)] = k;
-                }
-                epk[devname] = x;
             })();
         }
         console.log(`全てのデバイスでシードの共有が完了した`);
-        console.log(`共有にあたって公開された情報->`, epk);
+        console.log(`ネゴシエート中の通信路`, bbs);
     })();
     console.groupEnd();
-    const username = 'alice';
-    for (const svc in svcIDs) {
-        const Svc = Services[svc];
-        for (const devname of [...devList, ...devList]) {
-            await (async () => {
-                console.group(`user(${username}) は Dev(${devname}) を使って svc(${svc}) にアクセス`);
-                const Dev = Devices[devname];
-                let challenge;
-                let creds_utf8;
-                let ovkm;
-                try {
-                    const x = await Svc.startAuthn(username);
-                    challenge = BASE64URL_DECODE(x.challenge_b64u);
-                    creds_utf8 = x.creds_utf8;
-                    ovkm = x.ovkm;
-                }
-                catch (e) {
-                    console.log(`user(${username}) は svc(${svc}) にアカウントを登録していない`);
-                    console.log(`Device(${devname}) で svc(${svc}) にアカウント新規登録`);
-                    // クレデンシャルの生成
-                    const cred = UTF8(`Dummy Credential in ${devname} for ${svc}`);
-                    Dev.creds[svc] = UTF8_DECODE(cred);
-                    // OVK の生成
-                    const seed = Dev.seed;
-                    const r = window.crypto.getRandomValues(new Uint8Array(16));
-                    const ovk = await seed.deriveOVK(r);
-                    const mac = await seed.macOVK(ovk, r, svcIDs[svc]);
-                    // クレデンシャルと OVK を登録
-                    const isRegistered = await Svc.register(username, UTF8_DECODE(cred), {
-                        ovk_jwk: await ovk.toJWK(),
-                        mac_b64u: BASE64URL(mac),
-                        r_b64u: BASE64URL(r),
-                    });
-                    if (isRegistered) {
-                        console.log(`${svc} は Credential と Ownership Verification Key を保存した`);
-                    }
-                    else {
-                        throw new EvalError(`${svc} はアカウント新規登録に失敗`);
-                    }
-                    console.groupEnd();
-                    return;
-                }
-                console.log(`user(${username}) は svc(${svc}) にアカウントを登録済み`);
-                let cred_utf8 = creds_utf8.find((c) => c === Dev.creds[svc]);
-                if (!cred_utf8) {
-                    console.log(`user(${username}) は Dev(${devname}) を svc(${svc}) に登録していない`);
-                    console.log(`Device(${devname}) で svc(${svc}) にクレデンシャルのシームレスな登録`);
-                    // cred を生成して challenge に署名する (TODO: 必要か？)
-                    cred_utf8 = `Dummy Credential in ${devname} for ${svc}`;
-                    Dev.creds[svc] = cred_utf8;
-                    const sig_cred = new Uint8Array(await window.crypto.subtle.sign('HMAC', await window.crypto.subtle.importKey('raw', UTF8(cred_utf8), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']), challenge));
-                    // r の検証と OVK の導出
-                    const seed = Dev.seed;
-                    if (!(await seed.verifyOVK(ECPubKey.fromJWK(ovkm.ovk_jwk), BASE64URL_DECODE(ovkm.r_b64u), svcIDs[svc], BASE64URL_DECODE(ovkm.mac_b64u)))) {
-                        throw new EvalError(`seed.verifyOVK failed`);
-                    }
-                    const sig_ovk = await seed.signOVK(ECPubKey.fromJWK(ovkm.ovk_jwk), BASE64URL_DECODE(ovkm.r_b64u), UTF8(cred_utf8));
-                    console.log(`${svc} はクレデンシャルの検証を OVK を使って行う`);
-                    const isRegistered = await Svc.seamlessRegister('alice', cred_utf8, BASE64URL(sig_cred), {
-                        sig_b64u: BASE64URL(sig_ovk),
-                    });
-                    if (isRegistered) {
-                        console.log(`${svc} はデバイスB のクレデンシャル がデバイスA の OVK で検証できた`);
-                    }
-                    else {
-                        throw new EvalError(`${svc} はDeviceB のアカウント新規登録に失敗`);
-                    }
-                    console.groupEnd();
-                    return;
-                }
-                console.log(`user(${username}) は Dev(${devname}) を svc(${svc}) に登録している`);
-                console.log(`Device(${devname}) で svc(${svc}) にログイン`);
-                const seed = Dev.seed;
-                let updating;
-                if (await seed.isUpdating()) {
-                    console.log(`Dev(${devname}) は svc(${svc}) の OVK を更新する`);
-                    const seed = Dev.seed;
-                    if (!ovkm.next) {
-                        // 誰も Update メッセージを送っていない
-                        const r = window.crypto.getRandomValues(new Uint8Array(16));
-                        const ovk = await seed.deriveOVK(r);
-                        const mac = await seed.macOVK(ovk, r, svcIDs[svc]);
-                        const update = await seed.update(BASE64URL_DECODE(ovkm.r_b64u), ovk);
-                        updating = {
-                            update_b64u: BASE64URL(update),
-                            ovkm: { ovk_jwk: await ovk.toJWK(), r_b64u: BASE64URL(r), mac_b64u: BASE64URL(mac) },
-                        };
-                    }
-                    else {
-                        // Update メッセージが送信されている
-                        let ov_correct;
-                        for (const ov of ovkm.next) {
-                            const isVerified = await seed.verifyOVK(ECPubKey.fromJWK(ov.ovk_jwk), BASE64URL_DECODE(ov.r_b64u), svcIDs[svc], BASE64URL_DECODE(ov.mac_b64u));
-                            if (isVerified) {
-                                ov_correct = ov;
-                                break;
-                            }
-                        }
-                        if (!ov_correct) {
-                            // 知らない人が update メッセージを送っている！！！
-                            const r = window.crypto.getRandomValues(new Uint8Array(16));
-                            const ovk = await seed.deriveOVK(r);
-                            const mac = await seed.macOVK(ovk, r, svcIDs[svc]);
-                            const update = await seed.update(BASE64URL_DECODE(ovkm.r_b64u), ovk);
-                            updating = {
-                                update_b64u: BASE64URL(update),
-                                ovkm: {
-                                    ovk_jwk: await ovk.toJWK(),
-                                    r_b64u: BASE64URL(r),
-                                    mac_b64u: BASE64URL(mac),
-                                },
-                            };
-                        }
-                        else {
-                            const update = await seed.update(BASE64URL_DECODE(ovkm.r_b64u), ECPubKey.fromJWK(ov_correct.ovk_jwk));
-                            updating = { update_b64u: BASE64URL(update), ovkm: ov_correct };
-                        }
-                    }
-                }
-                // challenge-response 認証
-                const sig = new Uint8Array(await window.crypto.subtle.sign('HMAC', await window.crypto.subtle.importKey('raw', UTF8(cred_utf8), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']), challenge));
-                const isAuthned = await Svc.authn('alice', cred_utf8, BASE64URL(sig), updating);
-                if (isAuthned) {
-                    console.log(`Device A を使って ${svc} にログイン成功`);
-                }
-                else {
-                    throw new EvalError(`Device A を使った ${svc} へのログイン失敗`);
-                }
-                console.groupEnd();
-                return;
-            })();
-        }
-    }
-    console.group('シードの更新を行う');
-    await (async () => {
-        // シード共有する際の DH 公開鍵を一時的に保存するストア
-        const epk = {};
-        // シードの共有が完了していないデバイスリスト
-        let dl = [...devList];
-        // シードの共有のプロセスを実行するデバイス（インデックス）
-        let i = -1;
-        // 全てのデバイスでシードの共有が終わるまで以下を繰り返す。
-        while (dl.length !== 0) {
-            // // 最短で行くなら次のデバイスを触るのが良い (dev.length * 2 -1 でいける)
-            // const r = (i + 1) % dl.length;
-            // 操作するデバイスは以前操作していない未完了デバイスのいずれかにしてみた;
-            const r = Math.floor(Math.random() * dl.length);
-            if (r === i && dl.length !== 1) {
-                continue;
-            }
-            i = r;
-            const devname = dl[i];
-            console.log(`Dev(${devname}) process negotiation...`);
-            await (async () => {
-                const seed = Devices[devname].seed;
-                const { completion, epk: epk_computed } = await seed.negotiate({ id: devname, devIDs: devList }, epk, true);
-                if (completion) {
-                    // 完了した場合は dl から消去する。インデックスを新しい配列の長さと揃えるために -1 している。
-                    dl = dl.filter((n) => n !== devname);
-                    i--;
-                    console.log(`${devname} はシードの共有完了, remains: ${dl}`);
-                }
-                let x = epk[devname];
-                if (!x) {
-                    x = {};
-                }
-                for (const [c, k] of Object.entries(epk_computed)) {
-                    x[parseInt(c)] = k;
-                }
-                epk[devname] = x;
-            })();
-        }
-        console.log(`全てのデバイスでシードの共有が完了した`);
-        console.log(`共有にあたって公開された情報->`, epk);
-    })();
-    console.groupEnd();
-    for (const svc in svcIDs) {
-        const Svc = Services[svc];
-        for (const devname of [...devList, ...devList]) {
-            await (async () => {
-                console.group(`user(${username}) は Dev(${devname}) を使って svc(${svc}) にアクセス`);
-                const Dev = Devices[devname];
-                let challenge;
-                let creds_utf8;
-                let ovkm;
-                try {
-                    const x = await Svc.startAuthn(username);
-                    challenge = BASE64URL_DECODE(x.challenge_b64u);
-                    creds_utf8 = x.creds_utf8;
-                    ovkm = x.ovkm;
-                }
-                catch (e) {
-                    console.log(`user(${username}) は svc(${svc}) にアカウントを登録していない`);
-                    console.log(`Device(${devname}) で svc(${svc}) にアカウント新規登録`);
-                    // クレデンシャルの生成
-                    const cred = UTF8(`Dummy Credential in ${devname} for ${svc}`);
-                    Dev.creds[svc] = UTF8_DECODE(cred);
-                    // OVK の生成
-                    const seed = Dev.seed;
-                    const r = window.crypto.getRandomValues(new Uint8Array(16));
-                    const ovk = await seed.deriveOVK(r);
-                    const mac = await seed.macOVK(ovk, r, svcIDs[svc]);
-                    // クレデンシャルと OVK を登録
-                    const isRegistered = await Svc.register(username, UTF8_DECODE(cred), {
-                        ovk_jwk: await ovk.toJWK(),
-                        mac_b64u: BASE64URL(mac),
-                        r_b64u: BASE64URL(r),
-                    });
-                    if (isRegistered) {
-                        console.log(`${svc} は Credential と Ownership Verification Key を保存した`);
-                    }
-                    else {
-                        throw new EvalError(`${svc} はアカウント新規登録に失敗`);
-                    }
-                    console.groupEnd();
-                    return;
-                }
-                console.log(`user(${username}) は svc(${svc}) にアカウントを登録済み`);
-                let cred_utf8 = creds_utf8.find((c) => c === Dev.creds[svc]);
-                if (!cred_utf8) {
-                    console.log(`user(${username}) は Dev(${devname}) を svc(${svc}) に登録していない`);
-                    console.log(`Device(${devname}) で svc(${svc}) にクレデンシャルのシームレスな登録`);
-                    // cred を生成して challenge に署名する (TODO: 必要か？)
-                    cred_utf8 = `Dummy Credential in ${devname} for ${svc}`;
-                    Dev.creds[svc] = cred_utf8;
-                    const sig_cred = new Uint8Array(await window.crypto.subtle.sign('HMAC', await window.crypto.subtle.importKey('raw', UTF8(cred_utf8), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']), challenge));
-                    // r の検証と OVK の導出
-                    const seed = Dev.seed;
-                    if (!(await seed.verifyOVK(ECPubKey.fromJWK(ovkm.ovk_jwk), BASE64URL_DECODE(ovkm.r_b64u), svcIDs[svc], BASE64URL_DECODE(ovkm.mac_b64u)))) {
-                        throw new EvalError(`seed.verifyOVK failed`);
-                    }
-                    const sig_ovk = await seed.signOVK(ECPubKey.fromJWK(ovkm.ovk_jwk), BASE64URL_DECODE(ovkm.r_b64u), UTF8(cred_utf8));
-                    console.log(`${svc} はクレデンシャルの検証を OVK を使って行う`);
-                    const isRegistered = await Svc.seamlessRegister('alice', cred_utf8, BASE64URL(sig_cred), {
-                        sig_b64u: BASE64URL(sig_ovk),
-                    });
-                    if (isRegistered) {
-                        console.log(`${svc} はデバイスB のクレデンシャル がデバイスA の OVK で検証できた`);
-                    }
-                    else {
-                        throw new EvalError(`${svc} はDeviceB のアカウント新規登録に失敗`);
-                    }
-                    console.groupEnd();
-                    return;
-                }
-                console.log(`user(${username}) は Dev(${devname}) を svc(${svc}) に登録している`);
-                console.log(`Device(${devname}) で svc(${svc}) にログイン`);
-                const seed = Dev.seed;
-                let updating;
-                if (await seed.isUpdating()) {
-                    console.log(`Dev(${devname}) はシードを更新している`);
-                    console.log(`Dev(${devname}) は svc(${svc}) の OVK を更新する`);
-                    const seed = Dev.seed;
-                    if (!ovkm.next) {
-                        // 誰も Update メッセージを送っていない
-                        console.log(`Dev(${devname}) は svc(${svc}) に対して OVK を新規生成する`);
-                        const r = window.crypto.getRandomValues(new Uint8Array(16));
-                        const ovk = await seed.deriveOVK(r);
-                        const mac = await seed.macOVK(ovk, r, svcIDs[svc]);
-                        const update = await seed.update(BASE64URL_DECODE(ovkm.r_b64u), ovk);
-                        updating = {
-                            update_b64u: BASE64URL(update),
-                            ovkm: { ovk_jwk: await ovk.toJWK(), r_b64u: BASE64URL(r), mac_b64u: BASE64URL(mac) },
-                        };
-                    }
-                    else {
-                        // Update メッセージが送信されている
-                        let ov_correct;
-                        for (const ov of ovkm.next) {
-                            const isVerified = await seed.verifyOVK(ECPubKey.fromJWK(ov.ovk_jwk), BASE64URL_DECODE(ov.r_b64u), svcIDs[svc], BASE64URL_DECODE(ov.mac_b64u));
-                            if (isVerified) {
-                                ov_correct = ov;
-                                break;
-                            }
-                        }
-                        if (!ov_correct) {
-                            console.log(`違うシードからの OVK が登録されているので Dev(${devname}) は svc(${svc}) に対して OVK を新規生成する`);
-                            // 知らない人が update メッセージを送っている！！！
-                            const r = window.crypto.getRandomValues(new Uint8Array(16));
-                            const ovk = await seed.deriveOVK(r);
-                            const mac = await seed.macOVK(ovk, r, svcIDs[svc]);
-                            const update = await seed.update(BASE64URL_DECODE(ovkm.r_b64u), ovk);
-                            updating = {
-                                update_b64u: BASE64URL(update),
-                                ovkm: {
-                                    ovk_jwk: await ovk.toJWK(),
-                                    r_b64u: BASE64URL(r),
-                                    mac_b64u: BASE64URL(mac),
-                                },
-                            };
-                        }
-                        else {
-                            console.log(`Dev(${devname}) は svc(${svc}) に対して同じ OVK の update メッセージを送る`);
-                            const update = await seed.update(BASE64URL_DECODE(ovkm.r_b64u), ECPubKey.fromJWK(ov_correct.ovk_jwk));
-                            updating = { update_b64u: BASE64URL(update), ovkm: ov_correct };
-                        }
-                    }
-                }
-                // challenge-response 認証
-                const sig = new Uint8Array(await window.crypto.subtle.sign('HMAC', await window.crypto.subtle.importKey('raw', UTF8(cred_utf8), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']), challenge));
-                const isAuthned = await Svc.authn('alice', cred_utf8, BASE64URL(sig), updating);
-                if (isAuthned) {
-                    console.log(`Device A を使って ${svc} にログイン成功`);
-                }
-                else {
-                    throw new EvalError(`Device A を使った ${svc} へのログイン失敗`);
-                }
-                console.groupEnd();
-                return;
-            })();
-        }
-    }
+    // const username = 'alice';
+    // for (const svc in svcIDs) {
+    //   const Svc = Services[svc];
+    //   for (const devname of [...devList, ...devList]) {
+    //     await (async () => {
+    //       console.group(`user(${username}) は Dev(${devname}) を使って svc(${svc}) にアクセス`);
+    //       const Dev = Devices[devname];
+    //       let challenge: Uint8Array;
+    //       let creds_utf8: string[];
+    //       let ovkm: {
+    //         ovk_jwk: ECPubJWK;
+    //         r_b64u: string;
+    //         mac_b64u: string;
+    //         next?: {
+    //           ovk_jwk: ECPubJWK;
+    //           r_b64u: string;
+    //           mac_b64u: string;
+    //         }[];
+    //       };
+    //       try {
+    //         const x = await Svc.startAuthn(username);
+    //         challenge = BASE64URL_DECODE(x.challenge_b64u);
+    //         creds_utf8 = x.creds_utf8;
+    //         ovkm = x.ovkm;
+    //       } catch (e) {
+    //         console.log(`user(${username}) は svc(${svc}) にアカウントを登録していない`);
+    //         console.log(`Device(${devname}) で svc(${svc}) にアカウント新規登録`);
+    //         // クレデンシャルの生成
+    //         const cred = UTF8(`Dummy Credential in ${devname} for ${svc}`);
+    //         Dev.creds[svc] = UTF8_DECODE(cred);
+    //         // OVK の生成
+    //         const seed = Dev.seed;
+    //         const r = window.crypto.getRandomValues(new Uint8Array(16));
+    //         const ovk = await seed.deriveOVK(r);
+    //         const mac = await seed.macOVK(r, svcIDs[svc]);
+    //         // クレデンシャルと OVK を登録
+    //         const isRegistered = await Svc.register(username, UTF8_DECODE(cred), {
+    //           ovk_jwk: await ovk.toJWK(),
+    //           mac_b64u: BASE64URL(mac),
+    //           r_b64u: BASE64URL(r),
+    //         });
+    //         if (isRegistered) {
+    //           console.log(`${svc} は Credential と Ownership Verification Key を保存した`);
+    //         } else {
+    //           throw new EvalError(`${svc} はアカウント新規登録に失敗`);
+    //         }
+    //         console.groupEnd();
+    //         return;
+    //       }
+    //       console.log(`user(${username}) は svc(${svc}) にアカウントを登録済み`);
+    //       let cred_utf8 = creds_utf8.find((c) => c === Dev.creds[svc]);
+    //       if (!cred_utf8) {
+    //         console.log(`user(${username}) は Dev(${devname}) を svc(${svc}) に登録していない`);
+    //         console.log(`Device(${devname}) で svc(${svc}) にクレデンシャルのシームレスな登録`);
+    //         // cred を生成して challenge に署名する (TODO: 必要か？)
+    //         cred_utf8 = `Dummy Credential in ${devname} for ${svc}`;
+    //         Dev.creds[svc] = cred_utf8;
+    //         const sig_cred = new Uint8Array(
+    //           await window.crypto.subtle.sign(
+    //             'HMAC',
+    //             await window.crypto.subtle.importKey(
+    //               'raw',
+    //               UTF8(cred_utf8),
+    //               { name: 'HMAC', hash: 'SHA-256' },
+    //               false,
+    //               ['sign']
+    //             ),
+    //             challenge
+    //           )
+    //         );
+    //         // r の検証と OVK の導出
+    //         const seed = Dev.seed;
+    //         if (
+    //           !(await seed.verifyOVK(
+    //             BASE64URL_DECODE(ovkm.r_b64u),
+    //             svcIDs[svc],
+    //             BASE64URL_DECODE(ovkm.mac_b64u)
+    //           ))
+    //         ) {
+    //           throw new EvalError(`seed.verifyOVK failed`);
+    //         }
+    //         const sig_ovk = await seed.signOVK(BASE64URL_DECODE(ovkm.r_b64u), UTF8(cred_utf8));
+    //         console.log(`${svc} はクレデンシャルの検証を OVK を使って行う`);
+    //         const isRegistered = await Svc.seamlessRegister('alice', cred_utf8, BASE64URL(sig_cred), {
+    //           sig_b64u: BASE64URL(sig_ovk),
+    //         });
+    //         if (isRegistered) {
+    //           console.log(`${svc} はデバイスB のクレデンシャル がデバイスA の OVK で検証できた`);
+    //         } else {
+    //           throw new EvalError(`${svc} はDeviceB のアカウント新規登録に失敗`);
+    //         }
+    //         console.groupEnd();
+    //         return;
+    //       }
+    //       console.log(`user(${username}) は Dev(${devname}) を svc(${svc}) に登録している`);
+    //       console.log(`Device(${devname}) で svc(${svc}) にログイン`);
+    //       const seed = Dev.seed;
+    //       let updating:
+    //         | {
+    //             update_b64u: string;
+    //             ovkm: {
+    //               ovk_jwk: ECPubJWK;
+    //               r_b64u: string;
+    //               mac_b64u: string;
+    //             };
+    //           }
+    //         | undefined;
+    //       if (await seed.isUpdating()) {
+    //         console.log(`Dev(${devname}) は svc(${svc}) の OVK を更新する`);
+    //         const seed = Dev.seed;
+    //         if (!ovkm.next) {
+    //           // 誰も Update メッセージを送っていない
+    //           const r = window.crypto.getRandomValues(new Uint8Array(16));
+    //           const ovk = await seed.deriveOVK(r);
+    //           const mac = await seed.macOVK(r, svcIDs[svc]);
+    //           const update = await seed.update(BASE64URL_DECODE(ovkm.r_b64u), ovk);
+    //           updating = {
+    //             update_b64u: BASE64URL(update),
+    //             ovkm: { ovk_jwk: await ovk.toJWK(), r_b64u: BASE64URL(r), mac_b64u: BASE64URL(mac) },
+    //           };
+    //         } else {
+    //           // Update メッセージが送信されている
+    //           let ov_correct:
+    //             | {
+    //                 ovk_jwk: ECPubJWK;
+    //                 r_b64u: string;
+    //                 mac_b64u: string;
+    //               }
+    //             | undefined;
+    //           for (const ov of ovkm.next) {
+    //             const isVerified = await seed.verifyOVK(
+    //               BASE64URL_DECODE(ov.r_b64u),
+    //               svcIDs[svc],
+    //               BASE64URL_DECODE(ov.mac_b64u)
+    //             );
+    //             if (isVerified) {
+    //               ov_correct = ov;
+    //               break;
+    //             }
+    //           }
+    //           if (!ov_correct) {
+    //             // 知らない人が update メッセージを送っている！！！
+    //             const r = window.crypto.getRandomValues(new Uint8Array(16));
+    //             const ovk = await seed.deriveOVK(r);
+    //             const mac = await seed.macOVK(r, svcIDs[svc]);
+    //             const update = await seed.update(BASE64URL_DECODE(ovkm.r_b64u), ovk);
+    //             updating = {
+    //               update_b64u: BASE64URL(update),
+    //               ovkm: {
+    //                 ovk_jwk: await ovk.toJWK(),
+    //                 r_b64u: BASE64URL(r),
+    //                 mac_b64u: BASE64URL(mac),
+    //               },
+    //             };
+    //           } else {
+    //             const update = await seed.update(
+    //               BASE64URL_DECODE(ovkm.r_b64u),
+    //               ECPubKey.fromJWK(ov_correct.ovk_jwk)
+    //             );
+    //             updating = { update_b64u: BASE64URL(update), ovkm: ov_correct };
+    //           }
+    //         }
+    //       }
+    //       // challenge-response 認証
+    //       const sig = new Uint8Array(
+    //         await window.crypto.subtle.sign(
+    //           'HMAC',
+    //           await window.crypto.subtle.importKey(
+    //             'raw',
+    //             UTF8(cred_utf8),
+    //             { name: 'HMAC', hash: 'SHA-256' },
+    //             false,
+    //             ['sign']
+    //           ),
+    //           challenge
+    //         )
+    //       );
+    //       const isAuthned = await Svc.authn('alice', cred_utf8, BASE64URL(sig), updating);
+    //       if (isAuthned) {
+    //         console.log(`Device A を使って ${svc} にログイン成功`);
+    //       } else {
+    //         throw new EvalError(`Device A を使った ${svc} へのログイン失敗`);
+    //       }
+    //       console.groupEnd();
+    //       return;
+    //     })();
+    //   }
+    // }
+    // console.group('シードの更新を行う');
+    // await (async () => {
+    //   // シード共有する際の DH 公開鍵を一時的に保存するストア
+    //   const epk: Record<string, Record<number, ECPubJWK | undefined> | undefined> = {};
+    //   // シードの共有が完了していないデバイスリスト
+    //   let dl = [...devList];
+    //   // シードの共有のプロセスを実行するデバイス（インデックス）
+    //   let i = -1;
+    //   // 全てのデバイスでシードの共有が終わるまで以下を繰り返す。
+    //   while (dl.length !== 0) {
+    //     // // 最短で行くなら次のデバイスを触るのが良い (dev.length * 2 -1 でいける)
+    //     // const r = (i + 1) % dl.length;
+    //     // 操作するデバイスは以前操作していない未完了デバイスのいずれかにしてみた;
+    //     const r = Math.floor(Math.random() * dl.length);
+    //     if (r === i && dl.length !== 1) {
+    //       continue;
+    //     }
+    //     i = r;
+    //     const devname = dl[i];
+    //     console.log(`Dev(${devname}) process negotiation...`);
+    //     await (async () => {
+    //       const seed = Devices[devname].seed;
+    //       const { completion, epk: epk_computed } = await seed.negotiate(
+    //         { id: devname, devIDs: devList },
+    //         epk,
+    //         true
+    //       );
+    //       if (completion) {
+    //         // 完了した場合は dl から消去する。インデックスを新しい配列の長さと揃えるために -1 している。
+    //         dl = dl.filter((n) => n !== devname);
+    //         i--;
+    //         console.log(`${devname} はシードの共有完了, remains: ${dl}`);
+    //       }
+    //       let x = epk[devname];
+    //       if (!x) {
+    //         x = {};
+    //       }
+    //       for (const [c, k] of Object.entries(epk_computed)) {
+    //         x[parseInt(c)] = k;
+    //       }
+    //       epk[devname] = x;
+    //     })();
+    //   }
+    //   console.log(`全てのデバイスでシードの共有が完了した`);
+    //   console.log(`共有にあたって公開された情報->`, epk);
+    // })();
+    // console.groupEnd();
+    // for (const svc in svcIDs) {
+    //   const Svc = Services[svc];
+    //   for (const devname of [...devList, ...devList]) {
+    //     await (async () => {
+    //       console.group(`user(${username}) は Dev(${devname}) を使って svc(${svc}) にアクセス`);
+    //       const Dev = Devices[devname];
+    //       let challenge: Uint8Array;
+    //       let creds_utf8: string[];
+    //       let ovkm: {
+    //         ovk_jwk: ECPubJWK;
+    //         r_b64u: string;
+    //         mac_b64u: string;
+    //         next?: {
+    //           ovk_jwk: ECPubJWK;
+    //           r_b64u: string;
+    //           mac_b64u: string;
+    //         }[];
+    //       };
+    //       try {
+    //         const x = await Svc.startAuthn(username);
+    //         challenge = BASE64URL_DECODE(x.challenge_b64u);
+    //         creds_utf8 = x.creds_utf8;
+    //         ovkm = x.ovkm;
+    //       } catch (e) {
+    //         console.log(`user(${username}) は svc(${svc}) にアカウントを登録していない`);
+    //         console.log(`Device(${devname}) で svc(${svc}) にアカウント新規登録`);
+    //         // クレデンシャルの生成
+    //         const cred = UTF8(`Dummy Credential in ${devname} for ${svc}`);
+    //         Dev.creds[svc] = UTF8_DECODE(cred);
+    //         // OVK の生成
+    //         const seed = Dev.seed;
+    //         const r = window.crypto.getRandomValues(new Uint8Array(16));
+    //         const ovk = await seed.deriveOVK(r);
+    //         const mac = await seed.macOVK(r, svcIDs[svc]);
+    //         // クレデンシャルと OVK を登録
+    //         const isRegistered = await Svc.register(username, UTF8_DECODE(cred), {
+    //           ovk_jwk: await ovk.toJWK(),
+    //           mac_b64u: BASE64URL(mac),
+    //           r_b64u: BASE64URL(r),
+    //         });
+    //         if (isRegistered) {
+    //           console.log(`${svc} は Credential と Ownership Verification Key を保存した`);
+    //         } else {
+    //           throw new EvalError(`${svc} はアカウント新規登録に失敗`);
+    //         }
+    //         console.groupEnd();
+    //         return;
+    //       }
+    //       console.log(`user(${username}) は svc(${svc}) にアカウントを登録済み`);
+    //       let cred_utf8 = creds_utf8.find((c) => c === Dev.creds[svc]);
+    //       if (!cred_utf8) {
+    //         console.log(`user(${username}) は Dev(${devname}) を svc(${svc}) に登録していない`);
+    //         console.log(`Device(${devname}) で svc(${svc}) にクレデンシャルのシームレスな登録`);
+    //         // cred を生成して challenge に署名する (TODO: 必要か？)
+    //         cred_utf8 = `Dummy Credential in ${devname} for ${svc}`;
+    //         Dev.creds[svc] = cred_utf8;
+    //         const sig_cred = new Uint8Array(
+    //           await window.crypto.subtle.sign(
+    //             'HMAC',
+    //             await window.crypto.subtle.importKey(
+    //               'raw',
+    //               UTF8(cred_utf8),
+    //               { name: 'HMAC', hash: 'SHA-256' },
+    //               false,
+    //               ['sign']
+    //             ),
+    //             challenge
+    //           )
+    //         );
+    //         // r の検証と OVK の導出
+    //         const seed = Dev.seed;
+    //         if (
+    //           !(await seed.verifyOVK(
+    //             BASE64URL_DECODE(ovkm.r_b64u),
+    //             svcIDs[svc],
+    //             BASE64URL_DECODE(ovkm.mac_b64u)
+    //           ))
+    //         ) {
+    //           throw new EvalError(`seed.verifyOVK failed`);
+    //         }
+    //         const sig_ovk = await seed.signOVK(BASE64URL_DECODE(ovkm.r_b64u), UTF8(cred_utf8));
+    //         console.log(`${svc} はクレデンシャルの検証を OVK を使って行う`);
+    //         const isRegistered = await Svc.seamlessRegister('alice', cred_utf8, BASE64URL(sig_cred), {
+    //           sig_b64u: BASE64URL(sig_ovk),
+    //         });
+    //         if (isRegistered) {
+    //           console.log(`${svc} はデバイスB のクレデンシャル がデバイスA の OVK で検証できた`);
+    //         } else {
+    //           throw new EvalError(`${svc} はDeviceB のアカウント新規登録に失敗`);
+    //         }
+    //         console.groupEnd();
+    //         return;
+    //       }
+    //       console.log(`user(${username}) は Dev(${devname}) を svc(${svc}) に登録している`);
+    //       console.log(`Device(${devname}) で svc(${svc}) にログイン`);
+    //       const seed = Dev.seed;
+    //       let updating:
+    //         | {
+    //             update_b64u: string;
+    //             ovkm: {
+    //               ovk_jwk: ECPubJWK;
+    //               r_b64u: string;
+    //               mac_b64u: string;
+    //             };
+    //           }
+    //         | undefined;
+    //       if (await seed.isUpdating()) {
+    //         console.log(`Dev(${devname}) は svc(${svc}) の OVK を更新する`);
+    //         const seed = Dev.seed;
+    //         if (!ovkm.next) {
+    //           // 誰も Update メッセージを送っていない
+    //           const r = window.crypto.getRandomValues(new Uint8Array(16));
+    //           const ovk = await seed.deriveOVK(r);
+    //           const mac = await seed.macOVK(r, svcIDs[svc]);
+    //           const update = await seed.update(BASE64URL_DECODE(ovkm.r_b64u), ovk);
+    //           updating = {
+    //             update_b64u: BASE64URL(update),
+    //             ovkm: { ovk_jwk: await ovk.toJWK(), r_b64u: BASE64URL(r), mac_b64u: BASE64URL(mac) },
+    //           };
+    //         } else {
+    //           // Update メッセージが送信されている
+    //           let ov_correct:
+    //             | {
+    //                 ovk_jwk: ECPubJWK;
+    //                 r_b64u: string;
+    //                 mac_b64u: string;
+    //               }
+    //             | undefined;
+    //           for (const ov of ovkm.next) {
+    //             const isVerified = await seed.verifyOVK(
+    //               BASE64URL_DECODE(ov.r_b64u),
+    //               svcIDs[svc],
+    //               BASE64URL_DECODE(ov.mac_b64u)
+    //             );
+    //             if (isVerified) {
+    //               ov_correct = ov;
+    //               break;
+    //             }
+    //           }
+    //           if (!ov_correct) {
+    //             // 知らない人が update メッセージを送っている！！！
+    //             const r = window.crypto.getRandomValues(new Uint8Array(16));
+    //             const ovk = await seed.deriveOVK(r);
+    //             const mac = await seed.macOVK(r, svcIDs[svc]);
+    //             const update = await seed.update(BASE64URL_DECODE(ovkm.r_b64u), ovk);
+    //             updating = {
+    //               update_b64u: BASE64URL(update),
+    //               ovkm: {
+    //                 ovk_jwk: await ovk.toJWK(),
+    //                 r_b64u: BASE64URL(r),
+    //                 mac_b64u: BASE64URL(mac),
+    //               },
+    //             };
+    //           } else {
+    //             const update = await seed.update(
+    //               BASE64URL_DECODE(ovkm.r_b64u),
+    //               ECPubKey.fromJWK(ov_correct.ovk_jwk)
+    //             );
+    //             updating = { update_b64u: BASE64URL(update), ovkm: ov_correct };
+    //           }
+    //         }
+    //       }
+    //       // challenge-response 認証
+    //       const sig = new Uint8Array(
+    //         await window.crypto.subtle.sign(
+    //           'HMAC',
+    //           await window.crypto.subtle.importKey(
+    //             'raw',
+    //             UTF8(cred_utf8),
+    //             { name: 'HMAC', hash: 'SHA-256' },
+    //             false,
+    //             ['sign']
+    //           ),
+    //           challenge
+    //         )
+    //       );
+    //       const isAuthned = await Svc.authn('alice', cred_utf8, BASE64URL(sig), updating);
+    //       if (isAuthned) {
+    //         console.log(`Device A を使って ${svc} にログイン成功`);
+    //       } else {
+    //         throw new EvalError(`Device A を使った ${svc} へのログイン失敗`);
+    //       }
+    //       console.groupEnd();
+    //       return;
+    //     })();
+    //   }
+    // }
     console.group('Results');
     for (const devname of devList) {
         console.log(`Dev(${devname})`, Devices[devname]);

@@ -15,6 +15,17 @@ export function UTF8_DECODE(OCTETS: Uint8Array): string {
 }
 
 /**
+ * 文字列を ASCII バイトエンコードする。 (string to Uint8Array)
+ */
+export function ASCII(STRING: string): Uint8Array {
+  const b = new Uint8Array(STRING.length);
+  for (let i = 0; i < STRING.length; i++) {
+    b[i] = STRING.charCodeAt(i);
+  }
+  return b;
+}
+
+/**
  * バイト列を BASE64URL エンコードする (Uint8Array to string)
  */
 export function BASE64URL(OCTETS: Uint8Array): string {
