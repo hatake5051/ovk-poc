@@ -2,11 +2,115 @@
 <html lang="ja">
   <head>
     <meta content="text/html; charset=utf-8" http-equiv="Content-Type" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="pico.min.css" />
     <title>修論 PoC</title>
   </head>
 
   <body>
-    <h1>コンソールで遊ぼう</h1>
+    <header class="container">
+      <hgroup>
+        <h1>修論 PoC</h1>
+        <h2>１つのウィンドウを１つのデバイスと見做して PoC を実装した</h2>
+      </hgroup>
+    </header>
+    <main class="container-fluid">
+      <article>
+        <form id="dev-name">
+          <label>
+            デバイス名
+            <input type="text" name="dev-name" required />
+            <small>デバック時に識別しやすくするために名前をつけます</small>
+          </label>
+          <button type="submit">セットアップ</button>
+        </form>
+      </article>
+
+      <div class="grid" id="dev-controller" hidden>
+        <article id="seed">
+          <header>
+            <h2>シードの管理</h2>
+          </header>
+          <section id="seed-init-nego">
+            <h3>シードネゴシエーションの初期化</h3>
+            <p>所有するデバイス間でシードを共有するためにデバイスをセットアップします</p>
+            <form id="seed-init-nego-form">
+              <label>
+                デバイス識別子
+                <input type="text" name="dev-id" placeholder="devID" required />
+                <small>シードネゴシエーション中にこのデバイスを識別するために用います。</small>
+              </label>
+              <label>
+                相方のデバイス識別子
+                <input type="text" name="partner-id" placeholder="partnerID" required />
+                <small>
+                  DH鍵共有を行うにあたって公開鍵情報を受け取る相手を選択します。
+                  この識別子は他のデバイスのデバイス識別子であり、他のデバイスの相方と被ってはいけません。
+                </small>
+              </label>
+              <label>
+                デバイスの総数
+                <input type="number" name="dev-num" placeholder="devNum" required />
+                <small> シードを共有するデバイスの総数を入力してください。 </small>
+              </label>
+              <label>
+                共有時の一時的なパスワード
+                <input type="password" name="tmp-pw" placeholder="secret" required />
+                <small>
+                  ネゴシエート中は一時的なパスワードから算出された値で公開情報を暗号化します。
+                </small>
+              </label>
+              <button type="submit">共有を開始</button>
+            </form>
+          </section>
+
+          <section id="seed-nego">
+            <h3>シードネゴシエーション</h3>
+            <p>以下の情報を相方のデバイスに送信してください</p>
+            <form id="seed-nego-publish">
+              <input type="text" name="ciphertext" placeholder="XX.XX.XX.XXX.XX" readonly />
+              <button type="submit">Copy</button>
+            </form>
+            <p>相方のデバイス方もらった情報を入力してください</p>
+            <form id="seed-nego-form">
+              <label>
+                相方のデバイスからの計算結果
+                <input type="text" name="ciphertext" placeholder="XX.XX.XX.XXX.XX" required />
+              </label>
+
+              <button type="submit">途中計算</button>
+            </form>
+          </section>
+
+          <footer id="seed-nego-complition" hidden>
+            <h3>このデバイスでシードの計算が完了しました</h3>
+          </footer>
+        </article>
+
+        <article id="service">
+          <header>
+            <h2>サービスへのアクセス</h2>
+          </header>
+          <form id="svc-access">
+            <label>
+              アクセス先のサービスを選択
+              <select name="svc-id" requierd>
+                <option>svc1.example.com</option>
+                <option>svc2.example.com</option>
+              </select>
+            </label>
+            <label>
+              ユーザ名
+              <input type="text" name="user-name" placeholder="alice" required />
+            </label>
+            <div class="grid">
+              <button type="submit" name="register">新規登録</button>
+              <button type="submit" name="login">ログイン</button>
+            </div>
+          </form>
+        </article>
+      </div>
+    </main>
     <script src="bundle.js"></script>
   </body>
 </html>
