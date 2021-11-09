@@ -13,7 +13,7 @@ const Services: Record<typeof svcList[number], Service> = svcList.reduce((obj, s
   return obj;
 }, {} as Record<string, Service>);
 
-const server = createServer((req, resp) => {
+const server = createServer(async (req, resp) => {
   console.log('request ', req.url);
   // クライアント一式（静的ファイル）を返す。
   if (['/', '/index.html', '/client.js', '/pico.min.css'].includes(req.url ?? '')) {
@@ -66,7 +66,6 @@ const server = createServer((req, resp) => {
       resp.end(JSON.stringify({ err: `no such action request-url: ${req.url}` }));
       return;
     }
-
     const Svc = Services[svc];
     req.setEncoding('utf8');
     req.on('data', async (chunk) => {

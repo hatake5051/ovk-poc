@@ -22,7 +22,7 @@
             <input type="text" name="dev-name" required />
             <small>デバック時に識別しやすくするために名前をつけます</small>
           </label>
-          <button type="submit">セットアップ</button>
+          <button type="submit">初期化</button>
         </form>
       </article>
 
@@ -32,7 +32,7 @@
             <h2>シードの管理</h2>
           </header>
           <section id="seed-init-nego">
-            <h3>シードネゴシエーションの初期化</h3>
+            <h3>シードネゴシエーションのセットアップ</h3>
             <p>所有するデバイス間でシードを共有するためにデバイスをセットアップします</p>
             <form id="seed-init-nego-form">
               <label>
@@ -58,6 +58,7 @@
                 <input type="password" name="tmp-pw" placeholder="secret" required />
                 <small>
                   ネゴシエート中は一時的なパスワードから算出された値で公開情報を暗号化します。
+                  ネゴシエートに参加するデバイス間で同じパスワードを設定してください。
                 </small>
               </label>
               <button type="submit">共有を開始</button>
@@ -108,6 +109,9 @@
               <button type="submit" name="login">ログイン</button>
             </div>
           </form>
+          <footer id="svc-footer">
+            <p>サービスへのアクセスした際のログ</p>
+          </footer>
         </article>
       </div>
     </main>

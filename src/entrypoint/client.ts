@@ -127,10 +127,21 @@ window.document.getElementById('seed-nego-form')?.addEventListener('submit', asy
   }
 });
 
+// サービスへこのデバイスを使ってアクセスする
 window.document.getElementById('svc-access')?.addEventListener('submit', async function (e) {
+  const log = (text: string) => {
+    const footer = window.document.getElementById('svc-footer');
+    if (footer == null) {
+      throw new TypeError(`不正な HTML Document ${footer}`);
+    }
+    const p = window.document.createElement('p');
+    p.textContent = text;
+    footer.append(p);
+  };
   e.preventDefault();
+  // DOM チェック
   if (!(e instanceof SubmitEvent) || !(e.submitter instanceof HTMLButtonElement)) {
-    throw TypeError(`不正な HTML Document ${e}`);
+    throw new TypeError(`不正な HTML Document ${e}`);
   }
   // DOM チェック
   if (!(this instanceof HTMLFormElement)) {
@@ -144,28 +155,27 @@ window.document.getElementById('svc-access')?.addEventListener('submit', async f
   if (!(nameE instanceof HTMLInputElement)) {
     throw new TypeError(`不正な HTML Document ${nameE}`);
   }
+  // アクセスを試みる
   const accessReqMessage: StartAuthnRequestMessage = { username: nameE.value };
-
   const accessResp = await fetch(`http://localhost:8080/${svcIDE.value}/access`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(accessReqMessage),
   });
   if (accessResp.status !== 200) {
-    console.log('fetch error');
+    log(`${svcIDE.value} へのアクセス要求でstatus(${accessResp.status})のエラー`);
     return;
   }
   const accessRespMessage: unknown = await accessResp.json();
   if (!isStartAuthnResponseMessage(accessRespMessage)) {
-    console.log(`fetch error`, accessRespMessage);
+    log(`${svcIDE.value} へのアクセス要求で不正なレスポンスボディエラー`);
     return;
   }
-
+  // アカウント新規登録を試みる
   if (e.submitter.name === 'register') {
     if ('creds' in accessRespMessage) {
-      throw new EvalError(
-        `usename${nameE.value} はこのサービス${svcIDE.value}に対して登録済みです`
-      );
+      log(`ユーザ(${nameE.value}) はサービス(${svcIDE.value})にアカウント登録済みです`);
+      return;
     }
     const r = await Dev.register({ id: svcIDE.value, ...accessRespMessage });
     const regReqMessage: RegistrationRequestMessage = {
@@ -178,21 +188,21 @@ window.document.getElementById('svc-access')?.addEventListener('submit', async f
       body: JSON.stringify(regReqMessage),
     });
     if (regResp.status !== 200) {
-      console.log('アカウント新規登録に失敗', regReqMessage, regResp);
-      throw new EvalError(`アカウント新規登録に失敗 ${regReqMessage}`);
+      log(`${svcIDE.value} へのアカウント新規登録要求でstatus(${accessResp.status})のエラー`);
+      return;
     }
-    console.log('アカウント新規登録完了!');
+    log(`ユーザ(${nameE.value}) はサービス(${svcIDE.value})にアカウント登録完了!`);
+    return;
   } else if (e.submitter.name === 'login') {
     if (!('creds' in accessRespMessage)) {
-      throw new EvalError(
-        `username(${nameE.value}) はこのサービス(${svcIDE.value}) に対して登録済みではない`
-      );
+      log(`ユーザ(${nameE.value}) はサービス(${svcIDE.value}) に対して登録済みではない`);
+      return;
     }
     let a: ReturnType<typeof Dev.authn> extends Promise<infer P> ? P : never;
     try {
       a = await Dev.authn({ id: svcIDE.value, ...accessRespMessage }, accessRespMessage.ovkm);
     } catch {
-      // 登録済みクレデンシャルが見つからん
+      // 登録済みクレデンシャルが見つからんのでシームレスな登録を試みる
       const r = await Dev.register(
         { id: svcIDE.value, ...accessRespMessage },
         accessRespMessage.ovkm
@@ -207,10 +217,12 @@ window.document.getElementById('svc-access')?.addEventListener('submit', async f
         body: JSON.stringify(regReqMessage),
       });
       if (regResp.status !== 200) {
-        console.log('クレデンシャル追加登録に失敗', regReqMessage, regResp);
-        throw new EvalError(`クレデンシャル追加登録に失敗 ${regReqMessage}`);
+        log(`${svcIDE.value} へのクレデンシャル追加登録要求でstatus(${accessResp.status})のエラー`);
+        return;
       }
-      console.log('クレデンシャル追加登録完了!');
+      log(
+        `ユーザ(${nameE.value}) はサービス(${svcIDE.value})にこのデバイスのクレデンシャルを追加登録完了!`
+      );
       return;
     }
     const authnReqMessage: AuthnRequestMessage = {
@@ -223,10 +235,10 @@ window.document.getElementById('svc-access')?.addEventListener('submit', async f
       body: JSON.stringify(authnReqMessage),
     });
     if (authnResp.status !== 200) {
-      console.log('アカウントの認証に失敗', authnReqMessage, authnResp);
-      throw new EvalError(`アカウントログインに失敗 ${authnReqMessage}`);
+      log(`${svcIDE.value} へのログイン要求でstatus(${accessResp.status})のエラー`);
+      return;
     }
-    console.log('ログイン完了');
+    log(`ユーザ(${nameE.value}) はサービス(${svcIDE.value})にこのデバイスでログイン成功！`);
   } else {
     throw new TypeError(`不正な HTML Document ${e.submitter}`);
   }

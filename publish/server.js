@@ -8646,7 +8646,7 @@ const Services = svcList.reduce((obj, svc) => {
     obj[svc] = newService(svc);
     return obj;
 }, {});
-const server = http.createServer((req, resp) => {
+const server = http.createServer(async (req, resp) => {
     console.log('request ', req.url);
     // クライアント一式（静的ファイル）を返す。
     if (['/', '/index.html', '/client.js', '/pico.min.css'].includes(req.url ?? '')) {
