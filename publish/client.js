@@ -1,5 +1,70 @@
 'use strict';
 
+/**
+ * 文字列を UTF8 バイトエンコードする。(string to Uint8Array)
+ */
+function UTF8(STRING) {
+    const encoder = new TextEncoder();
+    return encoder.encode(STRING);
+}
+/**
+ * 文字列に UTF8 バイトデコードする (Uint8Array to string)
+ */
+function UTF8_DECODE(OCTETS) {
+    const decoder = new TextDecoder();
+    return decoder.decode(OCTETS);
+}
+/**
+ * 文字列を ASCII バイトエンコードする。 (string to Uint8Array)
+ */
+function ASCII(STRING) {
+    const b = new Uint8Array(STRING.length);
+    for (let i = 0; i < STRING.length; i++) {
+        b[i] = STRING.charCodeAt(i);
+    }
+    return b;
+}
+function HexStr2Uint8Array(hexstr, len) {
+    let ans_str = hexstr;
+    if (hexstr.length < len * 2) {
+        ans_str = '0'.repeat(len * 2 - hexstr.length) + hexstr;
+    }
+    const ans_length = ans_str.length / 2;
+    const ans = new Uint8Array(ans_length);
+    for (let i = 0; i < ans_length; i++) {
+        ans[i] = parseInt(ans_str.substr(i * 2, 2), 16);
+    }
+    return ans;
+}
+function Uint8Array2HexStr(arr, len) {
+    const str_arr = Array.from(arr).map(function (e) {
+        let hexchar = e.toString(16);
+        if (hexchar.length == 1) {
+            hexchar = '0' + hexchar;
+        }
+        return hexchar;
+    });
+    let ans = str_arr.join('');
+    if (ans.length < len * 2) {
+        ans = '0'.repeat(len * 2 - ans.length) + ans;
+    }
+    return ans;
+}
+/**
+ * ２つのバイト列を結合する
+ */
+function CONCAT(A, B) {
+    const ans = new Uint8Array(A.length + B.length);
+    ans.set(A);
+    ans.set(B, A.length);
+    return ans;
+}
+/**
+ * value を WouldBE<T> かどうか判定する。
+ * T のプロパティを持つかもしれないところまで。
+ */
+const isObject = (value) => typeof value === 'object' && value !== null;
+
 var commonjsGlobal = typeof globalThis !== 'undefined' ? globalThis : typeof window !== 'undefined' ? window : typeof global !== 'undefined' ? global : typeof self !== 'undefined' ? self : {};
 
 var bn = {exports: {}};
@@ -6349,9 +6414,9 @@ var sha256_K = [
   0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 ];
 
-function SHA256$2() {
-  if (!(this instanceof SHA256$2))
-    return new SHA256$2();
+function SHA256$3() {
+  if (!(this instanceof SHA256$3))
+    return new SHA256$3();
 
   BlockHash$2.call(this);
   this.h = [
@@ -6361,15 +6426,15 @@ function SHA256$2() {
   this.k = sha256_K;
   this.W = new Array(64);
 }
-utils$c.inherits(SHA256$2, BlockHash$2);
-var _256 = SHA256$2;
+utils$c.inherits(SHA256$3, BlockHash$2);
+var _256 = SHA256$3;
 
-SHA256$2.blockSize = 512;
-SHA256$2.outSize = 256;
-SHA256$2.hmacStrength = 192;
-SHA256$2.padLength = 64;
+SHA256$3.blockSize = 512;
+SHA256$3.outSize = 256;
+SHA256$3.hmacStrength = 192;
+SHA256$3.padLength = 64;
 
-SHA256$2.prototype._update = function _update(msg, start) {
+SHA256$3.prototype._update = function _update(msg, start) {
   var W = this.W;
 
   for (var i = 0; i < 16; i++)
@@ -6410,7 +6475,7 @@ SHA256$2.prototype._update = function _update(msg, start) {
   this.h[7] = sum32$1(this.h[7], h);
 };
 
-SHA256$2.prototype._digest = function digest(enc) {
+SHA256$3.prototype._digest = function digest(enc) {
   if (enc === 'hex')
     return utils$c.toHex32(this.h, 'big');
   else
@@ -6418,18 +6483,18 @@ SHA256$2.prototype._digest = function digest(enc) {
 };
 
 var utils$b = utils$g;
-var SHA256$1 = _256;
+var SHA256$2 = _256;
 
 function SHA224() {
   if (!(this instanceof SHA224))
     return new SHA224();
 
-  SHA256$1.call(this);
+  SHA256$2.call(this);
   this.h = [
     0xc1059ed8, 0x367cd507, 0x3070dd17, 0xf70e5939,
     0xffc00b31, 0x68581511, 0x64f98fa7, 0xbefa4fa4 ];
 }
-utils$b.inherits(SHA224, SHA256$1);
+utils$b.inherits(SHA224, SHA256$2);
 var _224 = SHA224;
 
 SHA224.blockSize = 512;
@@ -8163,33 +8228,9 @@ elliptic.eddsa = eddsa;
 }(elliptic));
 
 /**
- * 文字列を UTF8 バイトエンコードする。(string to Uint8Array)
- */
-function UTF8(STRING) {
-    const encoder = new TextEncoder();
-    return encoder.encode(STRING);
-}
-/**
- * 文字列に UTF8 バイトデコードする (Uint8Array to string)
- */
-function UTF8_DECODE(OCTETS) {
-    const decoder = new TextDecoder();
-    return decoder.decode(OCTETS);
-}
-/**
- * 文字列を ASCII バイトエンコードする。 (string to Uint8Array)
- */
-function ASCII(STRING) {
-    const b = new Uint8Array(STRING.length);
-    for (let i = 0; i < STRING.length; i++) {
-        b[i] = STRING.charCodeAt(i);
-    }
-    return b;
-}
-/**
  * バイト列を BASE64URL エンコードする (Uint8Array to string)
  */
-function BASE64URL(OCTETS) {
+function BASE64URL$1(OCTETS) {
     // window 組み込みの base64 encode 関数
     // 組み込みの関数は引数としてバイナリ文字列を要求するため
     // Uint8Array をバイナリ文字列へと変換する
@@ -8206,7 +8247,7 @@ function BASE64URL(OCTETS) {
 /**
  * バイト列に BASE64URL デコードする (string to Uint8Array)
  */
-function BASE64URL_DECODE(STRING) {
+function BASE64URL_DECODE$1(STRING) {
     const url_decode = STRING
         // URL-safe にするために変換した文字たちを戻す
         .replaceAll('-', '+')
@@ -8223,59 +8264,24 @@ function BASE64URL_DECODE(STRING) {
     }
     return b;
 }
-function HexStr2Uint8Array(hexstr, len) {
-    let ans_str = hexstr;
-    if (hexstr.length < len * 2) {
-        ans_str = '0'.repeat(len * 2 - hexstr.length) + hexstr;
-    }
-    const ans_length = ans_str.length / 2;
-    const ans = new Uint8Array(ans_length);
-    for (let i = 0; i < ans_length; i++) {
-        ans[i] = parseInt(ans_str.substr(i * 2, 2), 16);
-    }
-    return ans;
-}
-function Uint8Array2HexStr(arr, len) {
-    const str_arr = Array.from(arr).map(function (e) {
-        let hexchar = e.toString(16);
-        if (hexchar.length == 1) {
-            hexchar = '0' + hexchar;
-        }
-        return hexchar;
-    });
-    let ans = str_arr.join('');
-    if (ans.length < len * 2) {
-        ans = '0'.repeat(len * 2 - ans.length) + ans;
-    }
-    return ans;
-}
-/**
- * ２つのバイト列を結合する
- */
-function CONCAT(A, B) {
-    const ans = new Uint8Array(A.length + B.length);
-    ans.set(A);
-    ans.set(B, A.length);
-    return ans;
-}
 /**
  * 乱数列を生成する。
  * @param len 生成したいランダム列の長さ(バイト列)
  * @returns 乱数列
  */
-function RandUint8Array(len) {
+function RandUint8Array$1(len) {
     return window.crypto.getRandomValues(new Uint8Array(len));
 }
-const HKDF = async (key, salt, length) => {
+const HKDF$1 = async (key, salt, length) => {
     const k = await window.crypto.subtle.importKey('raw', key, 'HKDF', false, ['deriveBits']);
     const derivedKeyMaterial = await window.crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt, info: new Uint8Array() }, k, length);
     return new Uint8Array(derivedKeyMaterial);
 };
-const SHA256 = async (m) => {
+const SHA256$1 = async (m) => {
     const dgst = await window.crypto.subtle.digest('SHA-256', m);
     return new Uint8Array(dgst);
 };
-const HMAC = {
+const HMAC$1 = {
     async mac(key, m) {
         const sk_api = await window.crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
         const mac = await window.crypto.subtle.sign('HMAC', sk_api, m);
@@ -8287,7 +8293,7 @@ const HMAC = {
     },
 };
 const p256 = new elliptic.ec('p256');
-const ECP256 = {
+const ECP256$1 = {
     async gen(secret) {
         if (secret) {
             const pk = p256.keyFromPrivate(secret);
@@ -8301,9 +8307,9 @@ const ECP256 = {
             return {
                 kty: 'EC',
                 crv: 'P-256',
-                d: BASE64URL(d_bytes),
-                x: BASE64URL(x_bytes),
-                y: BASE64URL(y_bytes),
+                d: BASE64URL$1(d_bytes),
+                x: BASE64URL$1(x_bytes),
+                y: BASE64URL$1(y_bytes),
             };
         }
         const sk_api = await window.crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
@@ -8324,33 +8330,33 @@ const ECP256 = {
     },
     async dh(pk, sk) {
         const keypair = p256.keyFromPublic({
-            x: Uint8Array2HexStr(BASE64URL_DECODE(pk.x), 32),
-            y: Uint8Array2HexStr(BASE64URL_DECODE(pk.y), 32),
+            x: Uint8Array2HexStr(BASE64URL_DECODE$1(pk.x), 32),
+            y: Uint8Array2HexStr(BASE64URL_DECODE$1(pk.y), 32),
         });
-        const bp = keypair.getPublic().mul(new bn.exports.BN(BASE64URL_DECODE(sk.d)));
+        const bp = keypair.getPublic().mul(new bn.exports.BN(BASE64URL_DECODE$1(sk.d)));
         return {
             kty: 'EC',
             crv: 'P-256',
-            x: BASE64URL(HexStr2Uint8Array(bp.getX().toString(16, 32), 32)),
-            y: BASE64URL(HexStr2Uint8Array(bp.getY().toString(16, 32), 32)),
+            x: BASE64URL$1(HexStr2Uint8Array(bp.getX().toString(16, 32), 32)),
+            y: BASE64URL$1(HexStr2Uint8Array(bp.getY().toString(16, 32), 32)),
         };
     },
 };
-const PBES2JWE = {
+const PBES2JWE$1 = {
     async compact(pw, m) {
         // PBES2 用の JOSE Header を用意して
         const header = {
             alg: 'PBES2-HS256+A128KW',
             enc: 'A128GCM',
             p2c: 1000,
-            p2s: BASE64URL(RandUint8Array(16)),
+            p2s: BASE64URL$1(RandUint8Array$1(16)),
         };
-        const header_b64u = BASE64URL(UTF8(JSON.stringify(header)));
+        const header_b64u = BASE64URL$1(UTF8(JSON.stringify(header)));
         // Content Encryption Key を乱数生成する
-        const cek = RandUint8Array(16);
+        const cek = RandUint8Array$1(16);
         const cek_api = await window.crypto.subtle.importKey('raw', cek, 'AES-GCM', true, ['encrypt']);
         // CEK を使って m を暗号化
-        const iv = RandUint8Array(12);
+        const iv = RandUint8Array$1(12);
         const e = new Uint8Array(await window.crypto.subtle.encrypt({
             name: 'AES-GCM',
             iv,
@@ -8362,12 +8368,12 @@ const PBES2JWE = {
         const dk_api = await window.crypto.subtle.importKey('raw', await window.crypto.subtle.deriveBits({
             name: 'PBKDF2',
             hash: 'SHA-256',
-            salt: CONCAT(CONCAT(UTF8(header.alg), new Uint8Array([0])), BASE64URL_DECODE(header.p2s)),
+            salt: CONCAT(CONCAT(UTF8(header.alg), new Uint8Array([0])), BASE64URL_DECODE$1(header.p2s)),
             iterations: header.p2c,
         }, await window.crypto.subtle.importKey('raw', UTF8(pw), 'PBKDF2', false, ['deriveBits']), 128), { name: 'AES-KW' }, false, ['wrapKey']);
         const ek = new Uint8Array(await window.crypto.subtle.wrapKey('raw', cek_api, dk_api, { name: 'AES-KW' }));
-        const ek_b64u = BASE64URL(ek);
-        return `${header_b64u}.${ek_b64u}.${BASE64URL(iv)}.${BASE64URL(ciphertext)}.${BASE64URL(atag)}`;
+        const ek_b64u = BASE64URL$1(ek);
+        return `${header_b64u}.${ek_b64u}.${BASE64URL$1(iv)}.${BASE64URL$1(ciphertext)}.${BASE64URL$1(atag)}`;
     },
     async dec(pw, compact) {
         const l = compact.split('.');
@@ -8375,23 +8381,59 @@ const PBES2JWE = {
             throw new EvalError('JWE Compact Serialization の形式ではない');
         }
         const [h_b64u, ek_b64u, iv_b64u, c_b64u, atag_b64u] = l;
-        const header = JSON.parse(UTF8_DECODE(BASE64URL_DECODE(h_b64u)));
+        const header = JSON.parse(UTF8_DECODE(BASE64URL_DECODE$1(h_b64u)));
         // PBES2 で導出した鍵で EK をアンラップして CEK を得る
         const dk_api = await window.crypto.subtle.importKey('raw', await window.crypto.subtle.deriveBits({
             name: 'PBKDF2',
             hash: 'SHA-256',
-            salt: CONCAT(CONCAT(UTF8(header.alg), new Uint8Array([0])), BASE64URL_DECODE(header.p2s)),
+            salt: CONCAT(CONCAT(UTF8(header.alg), new Uint8Array([0])), BASE64URL_DECODE$1(header.p2s)),
             iterations: header.p2c,
         }, await window.crypto.subtle.importKey('raw', UTF8(pw), 'PBKDF2', false, ['deriveBits']), 128), { name: 'AES-KW' }, false, ['unwrapKey']);
-        const cek_api = await window.crypto.subtle.unwrapKey('raw', BASE64URL_DECODE(ek_b64u), dk_api, {
+        const cek_api = await window.crypto.subtle.unwrapKey('raw', BASE64URL_DECODE$1(ek_b64u), dk_api, {
             name: 'AES-KW',
         }, 'AES-GCM', true, ['decrypt']);
         // CEK を使って ciphertext と authentication tag から平文を復号し整合性を検証する
-        const e = await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv: BASE64URL_DECODE(iv_b64u), additionalData: ASCII(h_b64u) }, cek_api, CONCAT(BASE64URL_DECODE(c_b64u), BASE64URL_DECODE(atag_b64u)));
+        const e = await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv: BASE64URL_DECODE$1(iv_b64u), additionalData: ASCII(h_b64u) }, cek_api, CONCAT(BASE64URL_DECODE$1(c_b64u), BASE64URL_DECODE$1(atag_b64u)));
         return new Uint8Array(e);
     },
 };
+const RuntimeUtility = {
+    BASE64URL: BASE64URL$1,
+    BASE64URL_DECODE: BASE64URL_DECODE$1,
+    RandUint8Array: RandUint8Array$1,
+    HKDF: HKDF$1,
+    SHA256: SHA256$1,
+    HMAC: HMAC$1,
+    ECP256: ECP256$1,
+    PBES2JWE: PBES2JWE$1,
+};
 
+/**
+ * バイト列を BASE64URL エンコードする (Uint8Array to string)
+ */
+const BASE64URL = RuntimeUtility.BASE64URL;
+/**
+ * バイト列に BASE64URL デコードする (string to Uint8Array)
+ */
+const BASE64URL_DECODE = RuntimeUtility.BASE64URL_DECODE;
+/**
+ * 乱数列を生成する。
+ * @param len 生成したいランダム列の長さ(バイト列)
+ * @returns 乱数列
+ */
+const RandUint8Array = RuntimeUtility.RandUint8Array;
+const HKDF = RuntimeUtility.HKDF;
+const SHA256 = RuntimeUtility.SHA256;
+const HMAC = RuntimeUtility.HMAC;
+const ECP256 = RuntimeUtility.ECP256;
+const PBES2JWE = RuntimeUtility.PBES2JWE;
+
+const isECPubJWK = (arg) => isObject(arg) &&
+    arg.kty === 'EC' &&
+    (!arg.kid || typeof arg.kid === 'string') &&
+    typeof arg.crv === 'string' &&
+    typeof arg.x === 'string' &&
+    typeof arg.y === 'string';
 function equalECPubJWK(l, r) {
     if (!l && !r)
         return true;
@@ -8806,6 +8848,19 @@ class SeedImpl {
     }
 }
 
+const isovkm = (arg) => isObject(arg) &&
+    isECPubJWK(arg.ovk_jwk) &&
+    typeof arg.r_b64u === 'string' &&
+    typeof arg.mac_b64u === 'string';
+const isStartAuthnResponseMessage = (arg) => (isObject(arg) && typeof arg.challenge_b64u === 'string') ||
+    (isObject(arg) &&
+        typeof arg.challenge_b64u === 'string' &&
+        Array.isArray(arg.creds) &&
+        arg.creds.every(isECPubJWK) &&
+        isObject(arg.ovkm) &&
+        (!arg.ovkm.next || (Array.isArray(arg.ovkm.next) && arg.ovkm.next.every(isovkm))) &&
+        isovkm(arg.ovkm));
+
 let Dev;
 // Dev を初期化する
 window.document.getElementById('dev-name')?.addEventListener('submit', async function (e) {
@@ -8911,158 +8966,101 @@ window.document.getElementById('seed-nego-form')?.addEventListener('submit', asy
         }
     }
 });
-window.document.getElementById('svc-access')?.addEventListener('submit', function (e) {
+window.document.getElementById('svc-access')?.addEventListener('submit', async function (e) {
     e.preventDefault();
-    if (!(e instanceof SubmitEvent) || !(e.submitter instanceof HTMLInputElement)) {
+    if (!(e instanceof SubmitEvent) || !(e.submitter instanceof HTMLButtonElement)) {
         throw TypeError(`不正な HTML Document ${e}`);
     }
-    console.log(e.submitter?.name);
+    // DOM チェック
+    if (!(this instanceof HTMLFormElement)) {
+        throw new TypeError(`不正な HTML Document ${this}`);
+    }
+    const svcIDE = this['svc-id'];
+    if (!(svcIDE instanceof HTMLSelectElement)) {
+        throw new TypeError(`不正な HTML Document ${svcIDE}`);
+    }
+    const nameE = this['user-name'];
+    if (!(nameE instanceof HTMLInputElement)) {
+        throw new TypeError(`不正な HTML Document ${nameE}`);
+    }
+    const accessReqMessage = { username: nameE.value };
+    const accessResp = await fetch(`http://localhost:8080/${svcIDE.value}/access`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(accessReqMessage),
+    });
+    if (accessResp.status !== 200) {
+        console.log('fetch error');
+        return;
+    }
+    const accessRespMessage = await accessResp.json();
+    if (!isStartAuthnResponseMessage(accessRespMessage)) {
+        console.log(`fetch error`, accessRespMessage);
+        return;
+    }
+    if (e.submitter.name === 'register') {
+        if ('creds' in accessRespMessage) {
+            throw new EvalError(`usename${nameE.value} はこのサービス${svcIDE.value}に対して登録済みです`);
+        }
+        const r = await Dev.register({ id: svcIDE.value, ...accessRespMessage });
+        const regReqMessage = {
+            username: nameE.value,
+            ...r,
+        };
+        const regResp = await fetch(`http://localhost:8080/${svcIDE.value}/register`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(regReqMessage),
+        });
+        if (regResp.status !== 200) {
+            console.log('アカウント新規登録に失敗', regReqMessage, regResp);
+            throw new EvalError(`アカウント新規登録に失敗 ${regReqMessage}`);
+        }
+        console.log('アカウント新規登録完了!');
+    }
+    else if (e.submitter.name === 'login') {
+        if (!('creds' in accessRespMessage)) {
+            throw new EvalError(`username(${nameE.value}) はこのサービス(${svcIDE.value}) に対して登録済みではない`);
+        }
+        let a;
+        try {
+            a = await Dev.authn({ id: svcIDE.value, ...accessRespMessage }, accessRespMessage.ovkm);
+        }
+        catch {
+            // 登録済みクレデンシャルが見つからん
+            const r = await Dev.register({ id: svcIDE.value, ...accessRespMessage }, accessRespMessage.ovkm);
+            const regReqMessage = {
+                username: nameE.value,
+                ...r,
+            };
+            const regResp = await fetch(`http://localhost:8080/${svcIDE.value}/register`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(regReqMessage),
+            });
+            if (regResp.status !== 200) {
+                console.log('クレデンシャル追加登録に失敗', regReqMessage, regResp);
+                throw new EvalError(`クレデンシャル追加登録に失敗 ${regReqMessage}`);
+            }
+            console.log('クレデンシャル追加登録完了!');
+            return;
+        }
+        const authnReqMessage = {
+            username: nameE.value,
+            ...a,
+        };
+        const authnResp = await fetch(`http://localhost:8080/${svcIDE.value}/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(authnReqMessage),
+        });
+        if (authnResp.status !== 200) {
+            console.log('アカウントの認証に失敗', authnReqMessage, authnResp);
+            throw new EvalError(`アカウントログインに失敗 ${authnReqMessage}`);
+        }
+        console.log('ログイン完了');
+    }
+    else {
+        throw new TypeError(`不正な HTML Document ${e.submitter}`);
+    }
 });
-// (async () => {
-//   // Service の用意
-//   const svcIDs: Record<string, string> = {
-//     svc1: 'svc1.example',
-//     svc2: 'svc2.example',
-//     svc3: 'svc3.example',
-//   };
-//   const Services: Record<string, Service> = {};
-//   for (const svc in svcIDs) {
-//     Services[svc] = newService(svcIDs[svc]);
-//   }
-//   // Device の用意
-//   const devList = ['devA', 'devB'] as const;
-//   const partnerDevName = (devname: typeof devList[number]) => {
-//     // multiparty DH 鍵共有を行う際の相方情報を含める
-//     // device List をソートして相方のデバイスを決める (インデックスが一つ前のデバイス);
-//     const partner_idx = devList.indexOf(devname);
-//     const partnerDevName = devList[partner_idx === 0 ? devList.length - 1 : partner_idx - 1];
-//     return partnerDevName;
-//   };
-//   const x = {} as Record<string, Device>;
-//   for (const devname of devList) {
-//     x[devname] = await Device.gen(devname, newSeed());
-//   }
-//   const Devices: Record<typeof devList[number], Device> = x;
-//   for (const isUpdating of [false, true]) {
-//     console.group(isUpdating ? 'シードの更新を行う' : 'シードの共有を行う');
-//     await (async () => {
-//       // デバイスでシードをネゴシエートするときに、公開する情報を置いておく場所
-//       const bbs: Record<typeof devList[number], string> = devList.reduce((obj, devname) => {
-//         obj[devname] = '';
-//         return obj;
-//       }, {} as Record<string, string>);
-//       // まずは各デバイスで seed ネゴシエーションの初期化を行う;
-//       for (const devname of devList) {
-//         console.log(`Dev(${devname}) initiate negotiation...`);
-//         const Dev = Devices[devname];
-//         // id はネゴシエーション中に一意に識別できたら良い
-//         const ciphertext = await Dev.initSeedNegotiation(
-//           `dummy-password${isUpdating ? '-updating' : ''}`,
-//           `${devname}-tmp${isUpdating ? '-updating' : ''}`,
-//           `${partnerDevName(devname)}-tmp${isUpdating ? '-updating' : ''}`,
-//           devList.length,
-//           isUpdating
-//         );
-//         // 初期 DH 公開鍵を公開する
-//         bbs[devname] = ciphertext;
-//       }
-//       // シードの共有が完了していないデバイスリスト
-//       let dl = [...devList];
-//       // シードの共有のプロセスを実行するデバイス（インデックス）
-//       let i = -1;
-//       // 全てのデバイスでシードの共有が終わるまで以下を繰り返す。
-//       while (dl.length !== 0) {
-//         // // 最短で行くなら次のデバイスを触るのが良い
-//         const r = (i + 1) % dl.length;
-//         i = r;
-//         const devname = dl[i];
-//         console.log(`Dev(${devname}) process negotiation...`);
-//         await (async () => {
-//           // 相方の公開 DH 値をとってきて自身の秘密鍵と一緒に計算する
-//           const { completion, ciphertext } = await Devices[devname].seedNegotiating(
-//             bbs[partnerDevName(devname)],
-//             isUpdating
-//           );
-//           // 計算した結果を公開する
-//           bbs[devname] = ciphertext;
-//           if (completion) {
-//             // 完了した場合は dl から消去する。インデックスを新しい配列の長さと揃えるために -1 している。
-//             dl = dl.filter((n) => n !== devname);
-//             i--;
-//             console.log(`${devname} はシードの共有完了, remains: ${dl}`);
-//           }
-//         })();
-//       }
-//       console.log(`ネゴシエート中に公開された値`, bbs);
-//       console.log(`全てのデバイスでシードの共有が完了した`);
-//     })();
-//     console.groupEnd();
-//     // username を alice としてサービスにアカウント登録して、利用する
-//     const username = 'alice';
-//     for (const svcname in svcIDs) {
-//       const Svc = Services[svcname];
-//       for (const devname of [...devList, ...devList]) {
-//         const Dev = Devices[devname];
-//         await (async () => {
-//           console.group(`User(${username}) は Dev(${devname}) を使って Svc(${svcname}) にアクセス`);
-//           // サービスにログイン要求を行なった場合のレスポンスに応じて、アカウント登録済みかどうか判断できる
-//           const a = await Svc.startAuthn(username);
-//           if (!('creds' in a)) {
-//             // 一つもクレデンシャルを登録していない -> アカウント登録済みではない
-//             console.log(`User(${username}) は Svc(${svcname}) にアカウントを登録していない`);
-//             const { cred, ovkm } = await Dev.register({ id: svcname, ...a });
-//             // クレデンシャルと OVK を登録
-//             const isRegistered = await Svc.register(username, cred, ovkm);
-//             if (isRegistered) {
-//               console.log(`Dev(${devname}) で Svc(${svcname}) に新規登録(OVK と Cred の登録)`);
-//             } else {
-//               throw new EvalError(`Svc(${svcname}) はアカウント新規登録に失敗`);
-//             }
-//             console.groupEnd();
-//             return;
-//           } else {
-//             // クレデンシャルを登録時み -> アカウントは登録済み
-//             console.log(`User(${username}) は Svc(${svcname}) にアカウントを登録済み`);
-//             let da: ReturnType<typeof Dev.authn> extends Promise<infer P> ? P : never;
-//             try {
-//               // Device で認証操作を行なった場合、一致するクレデンシャルがなければこのデバイスは未登録であると判断できる
-//               da = await Dev.authn({ id: svcname, ...a }, a.ovkm);
-//             } catch {
-//               // 登録済みクレデンシャルがデバイスにない -> OVK を利用したクレデンシャル登録
-//               console.log(
-//                 `User(${username}) は Dev(${devname}) を Svc(${svcname}) に登録していない`
-//               );
-//               const { cred, ovkm } = await Dev.register({ id: svcname, ...a }, a.ovkm);
-//               const isRegistered = await Svc.register(username, cred, ovkm);
-//               if (isRegistered) {
-//                 console.log(`Dev(${devname}) で Svc(${svcname}) に追加登録(Cred の登録)`);
-//               } else {
-//                 throw new EvalError(`Svc(${svcname}) は Dev(${devname}) の追加登録に失敗`);
-//               }
-//               console.groupEnd();
-//               return;
-//             }
-//             // 一致するクレデンシャルがある -> ログインする
-//             console.log(`User(${username}) は Dev(${devname}) を Svc(${svcname}) に登録している`);
-//             const isAuthned = await Svc.authn(username, da.cred_jwk, da.sig_b64u, da.updating);
-//             if (isAuthned) {
-//               console.log(`Dev(${devname}) で Svc(${svcname}) にログイン`);
-//             } else {
-//               throw new EvalError(`Dev(${devname}) を使った ${svcname} へのログイン失敗`);
-//             }
-//             console.groupEnd();
-//             return;
-//           }
-//         })();
-//       }
-//     }
-//   }
-//   console.group('Results');
-//   for (const devname of devList) {
-//     console.log(`Dev(${devname})`, Devices[devname]);
-//   }
-//   for (const svcname in svcIDs) {
-//     console.log(`Svc(${svcname})`, Services[svcname]);
-//   }
-//   console.groupEnd();
-// })();

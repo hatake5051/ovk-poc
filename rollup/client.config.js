@@ -1,12 +1,12 @@
-import includePaths from 'rollup-plugin-includepaths';
-import resolve from '@rollup/plugin-node-resolve';
 import commonjs from '@rollup/plugin-commonjs';
 import json from '@rollup/plugin-json';
+import resolve from '@rollup/plugin-node-resolve';
+import includePaths from 'rollup-plugin-includepaths';
 
 export default {
-  input: 'build/index.js',
+  input: 'build/entrypoint/client.js',
   output: {
-    file: 'bundle.js',
+    file: 'publish/client.js',
     format: 'cjs',
   },
   plugins: [json(), commonjs(), resolve(), includePaths({ paths: ['./build'] })],

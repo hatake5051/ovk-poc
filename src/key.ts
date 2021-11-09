@@ -1,6 +1,14 @@
-import { BASE64URL, BASE64URL_DECODE, ECP256, SHA256, UTF8 } from 'utility';
+import { BASE64URL, BASE64URL_DECODE, ECP256, isObject, SHA256, UTF8 } from 'utility';
 
 export type ECPubJWK = { kty: 'EC'; kid?: string; crv: string; x: string; y: string };
+
+export const isECPubJWK = (arg: unknown): arg is ECPubJWK =>
+  isObject<ECPubJWK>(arg) &&
+  arg.kty === 'EC' &&
+  (!arg.kid || typeof arg.kid === 'string') &&
+  typeof arg.crv === 'string' &&
+  typeof arg.x === 'string' &&
+  typeof arg.y === 'string';
 
 export function equalECPubJWK(l?: ECPubJWK, r?: ECPubJWK): boolean {
   if (!l && !r) return true;
@@ -83,6 +91,9 @@ export class ECPubKey {
 }
 
 export type ECPirvJWK = { kty: 'EC'; kid?: string; crv: string; x: string; y: string; d: string };
+
+export const isECPirvJWK = (arg: unknown): arg is ECPirvJWK =>
+  isObject<ECPirvJWK>(arg) && typeof arg.d === 'string' && isECPubJWK(arg);
 
 export class ECPrivKey {
   private constructor(
