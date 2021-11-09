@@ -8890,6 +8890,14 @@ window.document.getElementById('dev-name')?.addEventListener('submit', async fun
     // シードの初期化画面に遷移
     window.location.href = '#seed-init-nego';
 });
+// シードの更新を行うかどうか判断する
+const isUpdating = () => {
+    const sw = window.document.getElementById('seed-updating');
+    if (!(sw instanceof HTMLInputElement)) {
+        throw new TypeError(`不正な HTML Document ${sw}`);
+    }
+    return sw.checked;
+};
 // シードネゴシエートの初期化を行う
 window.document
     .getElementById('seed-init-nego-form')
@@ -8914,7 +8922,7 @@ window.document
     if (!(pwE instanceof HTMLInputElement)) {
         throw new TypeError(`不正なフィーム入力 ${pwE}`);
     }
-    const publish = await Dev.initSeedNegotiation(pwE.value, devIDE.value, partnerIDE.value, parseInt(devNumE.value));
+    const publish = await Dev.initSeedNegotiation(pwE.value, devIDE.value, partnerIDE.value, parseInt(devNumE.value), isUpdating());
     // ネゴシエート中の値を公開する
     const publishAreas = window.document.getElementById('seed-nego-publish');
     if (publishAreas &&
@@ -8949,7 +8957,7 @@ window.document.getElementById('seed-nego-form')?.addEventListener('submit', asy
         throw new TypeError(`不正な HTML Document ${ciphertextE}`);
     }
     // 計算の実体
-    const { completion, ciphertext } = await Dev.seedNegotiating(ciphertextE.value);
+    const { completion, ciphertext } = await Dev.seedNegotiating(ciphertextE.value, isUpdating());
     ciphertextE.value = '';
     // 計算結果を公開する
     const publishAreas = window.document.getElementById('seed-nego-publish');

@@ -15,6 +15,7 @@
     "typescript": "^4.4.4"
   },
   "scripts": {
+    "start": "node publish/server.js",
     "build:client": "tsc",
     "postbuild:client": "rollup --config rollup/client.config.js",
     "build:server": "tsc",
