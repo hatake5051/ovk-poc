@@ -112,16 +112,16 @@ class SeedImpl implements SeedDeriver, SeedNegotiator, SeedUpdater {
       }
     } else {
       this.e = {
-        sk: await (await ECPrivKey.gen()).toJWK(),
+        sk: (await ECPrivKey.gen()).toJWK(),
         meta,
         idx: this.seeds.length,
       };
       e = this.e;
     }
 
-    const sk = ECPrivKey.fromJWK(e.sk);
+    const sk = await ECPrivKey.fromJWK(e.sk);
     // このデバイスで生成する DH 公開鍵。 0 step は対応する公開鍵そのもの
-    const ans: Record<number, ECPubJWK | undefined> = { 0: await (await sk.toECPubKey()).toJWK() };
+    const ans: Record<number, ECPubJWK | undefined> = { 0: sk.toECPubKey().toJWK() };
     // ネゴシエートする
     if (epk) {
       // 相方のデバイスから出てきた epk に自身の sk で DH していく
@@ -212,7 +212,7 @@ class SeedImpl implements SeedDeriver, SeedNegotiator, SeedUpdater {
       throw new EvalError(`Seed が有効でない`);
     }
     const prevSK = await this.OVK(prevR, s);
-    const sig = await prevSK.sign(UTF8(JSON.stringify(await nextOVK.toJWK())));
+    const sig = await prevSK.sign(UTF8(JSON.stringify(nextOVK.toJWK())));
     return new Uint8Array(sig);
   }
 }

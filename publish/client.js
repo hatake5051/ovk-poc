@@ -8434,6 +8434,12 @@ const isECPubJWK = (arg) => isObject(arg) &&
     typeof arg.crv === 'string' &&
     typeof arg.x === 'string' &&
     typeof arg.y === 'string';
+/**
+ * ２つの ECPubJWK が等しいかどうか判定する
+ * @param l ECPubJWK で undefined でも良い;
+ * @param r ECPubJWK で undefined でも良い;
+ * @returns 二つの ECPubJWK のプロパティが全て等しければ true
+ */
 function equalECPubJWK(l, r) {
     if (!l && !r)
         return true;
@@ -8441,30 +8447,16 @@ function equalECPubJWK(l, r) {
         return false;
     return l.kid === r.kid && l.crv === r.crv && l.x === r.x && l.y === r.y;
 }
+/**
+ * EC 公開鍵を表現するクラス。
+ * 署名の検証や kid の命名など行える。
+ */
 class ECPubKey {
     constructor(_x, _y, _kid) {
         this._x = _x;
         this._y = _y;
         this._kid = _kid;
-    }
-    get kty() {
-        return 'EC';
-    }
-    async kid() {
-        if (this._kid) {
-            return this._kid;
-        }
-        const json = JSON.stringify({
-            crv: this.crv,
-            kty: this.kty,
-            x: this.x('b64u'),
-            y: this.y('b64u'),
-        });
-        const dgst = await SHA256(UTF8(json));
-        return BASE64URL(dgst);
-    }
-    get crv() {
-        return 'P-256';
+        this.crv = 'P-256';
     }
     x(format) {
         switch (format) {
@@ -8482,69 +8474,42 @@ class ECPubKey {
                 return this._y;
         }
     }
-    static async fromPrivKey(pk) {
-        return new ECPubKey(pk.x('oct'), pk.y('oct'), await pk.kid());
-    }
-    static fromJWK(jwk) {
-        return new ECPubKey(BASE64URL_DECODE(jwk.x), BASE64URL_DECODE(jwk.y), jwk.kid);
+    static async fromJWK(jwk) {
+        return new ECPubKey(BASE64URL_DECODE(jwk.x), BASE64URL_DECODE(jwk.y), jwk.kid ?? (await genKID(jwk)));
     }
     static is(arg) {
         return arg instanceof ECPubKey;
     }
-    async toJWK() {
+    /**
+     * この公開鍵を JWK で表現する。
+     * @returns EC公開鍵の JWK 表現
+     */
+    toJWK() {
         return {
-            kty: this.kty,
-            kid: await this.kid(),
+            kty: 'EC',
+            kid: this._kid,
             crv: this.crv,
             x: this.x('b64u'),
             y: this.y('b64u'),
         };
     }
+    /**
+     * この公開鍵を使って署名値の検証を行う
+     * @param m 署名対象のメッセージ
+     * @param s 署名値
+     * @returns 署名の検証に成功すれば true
+     */
     async verify(m, s) {
-        return ECP256.verify(await this.toJWK(), m, s);
+        return ECP256.verify(this.toJWK(), m, s);
     }
 }
-class ECPrivKey {
-    constructor(_x, _y, _d, _kid) {
-        this._x = _x;
-        this._y = _y;
+/**
+ * EC 秘密鍵を表現する。
+ */
+class ECPrivKey extends ECPubKey {
+    constructor(_x, _y, _d, kid) {
+        super(_x, _y, kid);
         this._d = _d;
-        this._kid = _kid;
-    }
-    get kty() {
-        return 'EC';
-    }
-    get crv() {
-        return 'P-256';
-    }
-    async kid() {
-        if (this._kid) {
-            return this._kid;
-        }
-        const json = JSON.stringify({
-            crv: this.crv,
-            kty: this.kty,
-            x: this.x('b64u'),
-            y: this.y('b64u'),
-        });
-        const dgst = await SHA256(UTF8(json));
-        return BASE64URL(dgst);
-    }
-    x(format) {
-        switch (format) {
-            case 'b64u':
-                return BASE64URL(this._x);
-            case 'oct':
-                return this._x;
-        }
-    }
-    y(format) {
-        switch (format) {
-            case 'b64u':
-                return BASE64URL(this._y);
-            case 'oct':
-                return this._y;
-        }
     }
     d(format) {
         switch (format) {
@@ -8554,34 +8519,69 @@ class ECPrivKey {
                 return this._d;
         }
     }
+    /**
+     * 秘密鍵成分から EC 公開鍵を導出して ECPrivKey を作成するコンストラクタ
+     * @param d 秘密鍵の d
+     * @returns Promise<ECPrivKey>
+     */
     static async fromSecret(d) {
         return ECPrivKey.fromJWK((await ECP256.gen(d)));
     }
-    static fromJWK(jwk) {
-        return new ECPrivKey(BASE64URL_DECODE(jwk.x), BASE64URL_DECODE(jwk.y), BASE64URL_DECODE(jwk.d), jwk.kid);
+    /**
+     * JWK からECPrivKey を作成するコンストラクタ
+     * @param jwk EC 秘密鍵の JWK 成分
+     * @returns Promise<ECPrivKey>
+     */
+    static async fromJWK(jwk) {
+        return new ECPrivKey(BASE64URL_DECODE(jwk.x), BASE64URL_DECODE(jwk.y), BASE64URL_DECODE(jwk.d), jwk.kid ?? (await genKID(jwk)));
     }
+    /**
+     * ランダムに ECPrivKey を作成するコンストラクタ
+     * @returns Promise<ECPrivKey>
+     */
     static async gen() {
         return ECPrivKey.fromJWK((await ECP256.gen()));
     }
-    async toECPubKey() {
-        return ECPubKey.fromPrivKey(this);
+    toECPubKey() {
+        return this;
     }
-    async toJWK() {
+    toJWK() {
         return {
-            kty: this.kty,
-            kid: await this.kid(),
-            crv: this.crv,
-            x: this.x('b64u'),
-            y: this.y('b64u'),
+            ...super.toJWK(),
             d: this.d('b64u'),
         };
     }
+    /**
+     * ECDH を行う
+     * @param pk EC 公開鍵
+     * @returns (this.d) * pk した結果の EC 公開鍵
+     */
     async computeDH(pk) {
         return (await ECP256.dh(pk, await this.toJWK()));
     }
+    /**
+     * この秘密鍵を使ってメッセージに対して署名する。
+     * @param m 署名対象のメッセージ
+     * @returns 署名値
+     */
     async sign(m) {
         return ECP256.sign(await this.toJWK(), m);
     }
+}
+/**
+ * RFC 7638 - JSON Web Key (JWK) Thumbprint に基づいて kid を生成する。
+ * @param jwk KID 生成対象
+ * @returns jwk.kid
+ */
+async function genKID(jwk) {
+    const json = JSON.stringify({
+        crv: jwk.crv,
+        kty: jwk.kty,
+        x: jwk.x,
+        y: jwk.y,
+    });
+    const dgst = await SHA256(UTF8(json));
+    return BASE64URL(dgst);
 }
 
 class Device {
@@ -8672,7 +8672,7 @@ class Device {
             throw new EvalError(`登録済みのクレデンシャルはこのデバイスにない`);
         }
         // challenge に署名する
-        const sk = ECPrivKey.fromJWK(cred_sk);
+        const sk = await ECPrivKey.fromJWK(cred_sk);
         const cred_jwk = await (await sk.toECPubKey()).toJWK();
         const sig = await sk.sign(BASE64URL_DECODE(svc.challenge_b64u));
         const sig_b64u = BASE64URL(sig);
@@ -8696,7 +8696,7 @@ class Device {
         })(ovkm.next);
         if (ovkm_correct) {
             // すでに登録済みの nextOVK に対応する Update メッセージを送る
-            const update = await this.seed.update(BASE64URL_DECODE(ovkm.r_b64u), ECPubKey.fromJWK(ovkm_correct.ovk_jwk));
+            const update = await this.seed.update(BASE64URL_DECODE(ovkm.r_b64u), await ECPubKey.fromJWK(ovkm_correct.ovk_jwk));
             return {
                 cred_jwk,
                 sig_b64u,
@@ -8752,15 +8752,15 @@ class SeedImpl {
         }
         else {
             this.e = {
-                sk: await (await ECPrivKey.gen()).toJWK(),
+                sk: (await ECPrivKey.gen()).toJWK(),
                 meta,
                 idx: this.seeds.length,
             };
             e = this.e;
         }
-        const sk = ECPrivKey.fromJWK(e.sk);
+        const sk = await ECPrivKey.fromJWK(e.sk);
         // このデバイスで生成する DH 公開鍵。 0 step は対応する公開鍵そのもの
-        const ans = { 0: await (await sk.toECPubKey()).toJWK() };
+        const ans = { 0: sk.toECPubKey().toJWK() };
         // ネゴシエートする
         if (epk) {
             // 相方のデバイスから出てきた epk に自身の sk で DH していく
@@ -8843,7 +8843,7 @@ class SeedImpl {
             throw new EvalError(`Seed が有効でない`);
         }
         const prevSK = await this.OVK(prevR, s);
-        const sig = await prevSK.sign(UTF8(JSON.stringify(await nextOVK.toJWK())));
+        const sig = await prevSK.sign(UTF8(JSON.stringify(nextOVK.toJWK())));
         return new Uint8Array(sig);
     }
 }
@@ -8861,7 +8861,9 @@ const isStartAuthnResponseMessage = (arg) => (isObject(arg) && typeof arg.challe
         (!arg.ovkm.next || (Array.isArray(arg.ovkm.next) && arg.ovkm.next.every(isovkm))) &&
         isovkm(arg.ovkm));
 
+const origin = 'http://localhost:8080';
 let Dev;
+const registeredUsers = {};
 // Dev を初期化する
 window.document.getElementById('dev-name')?.addEventListener('submit', async function (e) {
     e.preventDefault();
@@ -9020,7 +9022,7 @@ window.document.getElementById('svc-access')?.addEventListener('submit', async f
     }
     // アクセスを試みる
     const accessReqMessage = { username: nameE.value };
-    const accessResp = await fetch(`http://localhost:8080/${svcIDE.value}/access`, {
+    const accessResp = await fetch(`${origin}/${svcIDE.value}/access`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(accessReqMessage),
@@ -9045,7 +9047,7 @@ window.document.getElementById('svc-access')?.addEventListener('submit', async f
             username: nameE.value,
             ...r,
         };
-        const regResp = await fetch(`http://localhost:8080/${svcIDE.value}/register`, {
+        const regResp = await fetch(`${origin}/${svcIDE.value}/register`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(regReqMessage),
@@ -9054,6 +9056,8 @@ window.document.getElementById('svc-access')?.addEventListener('submit', async f
             log(`${svcIDE.value} へのアカウント新規登録要求でstatus(${accessResp.status})のエラー`);
             return;
         }
+        registeredUsers[svcIDE.value]?.push(nameE.value) ??
+            (registeredUsers[svcIDE.value] = [nameE.value]);
         log(`ユーザ(${nameE.value}) はサービス(${svcIDE.value})にアカウント登録完了!`);
         return;
     }
@@ -9073,7 +9077,7 @@ window.document.getElementById('svc-access')?.addEventListener('submit', async f
                 username: nameE.value,
                 ...r,
             };
-            const regResp = await fetch(`http://localhost:8080/${svcIDE.value}/register`, {
+            const regResp = await fetch(`${origin}/${svcIDE.value}/register`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(regReqMessage),
@@ -9089,7 +9093,7 @@ window.document.getElementById('svc-access')?.addEventListener('submit', async f
             username: nameE.value,
             ...a,
         };
-        const authnResp = await fetch(`http://localhost:8080/${svcIDE.value}/login`, {
+        const authnResp = await fetch(`${origin}/${svcIDE.value}/login`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(authnReqMessage),
@@ -9102,5 +9106,19 @@ window.document.getElementById('svc-access')?.addEventListener('submit', async f
     }
     else {
         throw new TypeError(`不正な HTML Document ${e.submitter}`);
+    }
+});
+window.addEventListener('beforeunload', async function () {
+    for (const [svcID, users] of Object.entries(registeredUsers)) {
+        if (!users) {
+            continue;
+        }
+        for (const user of users) {
+            await fetch(`${origin}/${svcID}/reset`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username: user }),
+            });
+        }
     }
 });

@@ -7,7 +7,10 @@ import {
   StartAuthnRequestMessage,
 } from './message';
 
+const origin = 'http://localhost:8080';
+
 let Dev: Device;
+const registeredUsers: Record<string, string[] | undefined> = {};
 
 // Dev を初期化する
 window.document.getElementById('dev-name')?.addEventListener('submit', async function (e) {
@@ -183,7 +186,7 @@ window.document.getElementById('svc-access')?.addEventListener('submit', async f
   }
   // アクセスを試みる
   const accessReqMessage: StartAuthnRequestMessage = { username: nameE.value };
-  const accessResp = await fetch(`http://localhost:8080/${svcIDE.value}/access`, {
+  const accessResp = await fetch(`${origin}/${svcIDE.value}/access`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(accessReqMessage),
@@ -208,7 +211,7 @@ window.document.getElementById('svc-access')?.addEventListener('submit', async f
       username: nameE.value,
       ...r,
     };
-    const regResp = await fetch(`http://localhost:8080/${svcIDE.value}/register`, {
+    const regResp = await fetch(`${origin}/${svcIDE.value}/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(regReqMessage),
@@ -217,6 +220,8 @@ window.document.getElementById('svc-access')?.addEventListener('submit', async f
       log(`${svcIDE.value} へのアカウント新規登録要求でstatus(${accessResp.status})のエラー`);
       return;
     }
+    registeredUsers[svcIDE.value]?.push(nameE.value) ??
+      (registeredUsers[svcIDE.value] = [nameE.value]);
     log(`ユーザ(${nameE.value}) はサービス(${svcIDE.value})にアカウント登録完了!`);
     return;
   } else if (e.submitter.name === 'login') {
@@ -237,7 +242,7 @@ window.document.getElementById('svc-access')?.addEventListener('submit', async f
         username: nameE.value,
         ...r,
       };
-      const regResp = await fetch(`http://localhost:8080/${svcIDE.value}/register`, {
+      const regResp = await fetch(`${origin}/${svcIDE.value}/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(regReqMessage),
@@ -255,7 +260,7 @@ window.document.getElementById('svc-access')?.addEventListener('submit', async f
       username: nameE.value,
       ...a,
     };
-    const authnResp = await fetch(`http://localhost:8080/${svcIDE.value}/login`, {
+    const authnResp = await fetch(`${origin}/${svcIDE.value}/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(authnReqMessage),
@@ -267,5 +272,20 @@ window.document.getElementById('svc-access')?.addEventListener('submit', async f
     log(`ユーザ(${nameE.value}) はサービス(${svcIDE.value})にこのデバイスでログイン成功！`);
   } else {
     throw new TypeError(`不正な HTML Document ${e.submitter}`);
+  }
+});
+
+window.addEventListener('beforeunload', async function () {
+  for (const [svcID, users] of Object.entries(registeredUsers)) {
+    if (!users) {
+      continue;
+    }
+    for (const user of users) {
+      await fetch(`${origin}/${svcID}/reset`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: user }),
+      });
+    }
   }
 });

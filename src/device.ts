@@ -161,7 +161,7 @@ export class Device {
       throw new EvalError(`登録済みのクレデンシャルはこのデバイスにない`);
     }
     // challenge に署名する
-    const sk = ECPrivKey.fromJWK(cred_sk);
+    const sk = await ECPrivKey.fromJWK(cred_sk);
     const cred_jwk = await (await sk.toECPubKey()).toJWK();
     const sig = await sk.sign(BASE64URL_DECODE(svc.challenge_b64u));
     const sig_b64u = BASE64URL(sig);
@@ -191,7 +191,7 @@ export class Device {
       // すでに登録済みの nextOVK に対応する Update メッセージを送る
       const update = await this.seed.update(
         BASE64URL_DECODE(ovkm.r_b64u),
-        ECPubKey.fromJWK(ovkm_correct.ovk_jwk)
+        await ECPubKey.fromJWK(ovkm_correct.ovk_jwk)
       );
       return {
         cred_jwk,

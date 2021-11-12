@@ -53,7 +53,7 @@ export class Service {
     }
     // cred のアテステーションを検証する.
     // 面倒なので アテステーションキーの検証は考慮していない
-    const pk_atts = ECPubKey.fromJWK(cred.atts.key);
+    const pk_atts = await ECPubKey.fromJWK(cred.atts.key);
     if (
       !(await pk_atts.verify(
         CONCAT(BASE64URL_DECODE(challenge_b64u), UTF8(JSON.stringify(cred.jwk))),
@@ -81,7 +81,7 @@ export class Service {
       // アカウント登録済みなのに、 OVK を追加登録しようとしている
       return false;
     }
-    const ovk = ECPubKey.fromJWK(cm.getOVK());
+    const ovk = await ECPubKey.fromJWK(cm.getOVK());
     if (!(await ovk.verify(UTF8(JSON.stringify(cred.jwk)), BASE64URL_DECODE(ovkm.sig_b64u)))) {
       // OVK を使ってクレデンシャルの検証に失敗
       return false;
@@ -115,7 +115,7 @@ export class Service {
     if (!cm || !cm.isCred(cred_jwk)) {
       return false;
     }
-    const cred = ECPubKey.fromJWK(cred_jwk);
+    const cred = await ECPubKey.fromJWK(cred_jwk);
     return cred.verify(BASE64URL_DECODE(challenge_b64u), BASE64URL_DECODE(sig_b64u));
   }
 
@@ -132,7 +132,7 @@ export class Service {
     if (!cm) {
       return false;
     }
-    const ovk = ECPubKey.fromJWK(cm.getOVK());
+    const ovk = await ECPubKey.fromJWK(cm.getOVK());
     if (
       !(await ovk.verify(UTF8(JSON.stringify(ovkm_next.ovk_jwk)), BASE64URL_DECODE(update_b64u)))
     ) {
@@ -140,6 +140,11 @@ export class Service {
     }
 
     return cm.addUpdating(ovkm_next.ovk_jwk, ovkm_next.r_b64u, ovkm_next.mac_b64u);
+  }
+
+  async delete(name: string): Promise<void> {
+    this.db[name] = undefined;
+    return;
   }
 }
 

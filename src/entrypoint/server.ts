@@ -57,13 +57,15 @@ const server = createServer(async (req, resp) => {
       console.groupEnd();
       return;
     }
-    let action: 'register' | 'login' | 'access';
+    let action: 'register' | 'login' | 'access' | 'reset';
     if (req.url?.endsWith('/register')) {
       action = 'register';
     } else if (req.url?.endsWith('/login')) {
       action = 'login';
     } else if (req.url?.endsWith('/access')) {
       action = 'access';
+    } else if (req.url?.endsWith('/reset')) {
+      action = 'reset';
     } else {
       resp.writeHead(500, { 'Content-Type': 'application/json' });
       resp.end(JSON.stringify({ err: `no such action request-url: ${req.url}` }));
@@ -113,6 +115,19 @@ const server = createServer(async (req, resp) => {
           resp.end(JSON.stringify(r));
           console.log(`${req.url}:\n  req: ${JSON.stringify(data)}\n  resp: ${JSON.stringify(r)}`);
           return;
+        }
+        case 'reset': {
+          // デバック用にサービスの認証情報をリセットする
+          if (!isStartAuthnRequestMessage(data)) {
+            resp.writeHead(401, { 'Content-Type': 'application/json' });
+            resp.end(JSON.stringify({ err: `formatting error: ${req.url}` }));
+            console.log(`${req.url}: error with 401`);
+            return;
+          }
+          await Svc.delete(data.username);
+          resp.writeHead(200, { 'Content-Type': 'application/json' });
+          resp.end();
+          console.log(`${req.url}:\n  user: ${data.username}`);
         }
       }
     });

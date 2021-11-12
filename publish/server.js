@@ -8421,6 +8421,12 @@ const isECPubJWK = (arg) => isObject(arg) &&
     typeof arg.crv === 'string' &&
     typeof arg.x === 'string' &&
     typeof arg.y === 'string';
+/**
+ * ２つの ECPubJWK が等しいかどうか判定する
+ * @param l ECPubJWK で undefined でも良い;
+ * @param r ECPubJWK で undefined でも良い;
+ * @returns 二つの ECPubJWK のプロパティが全て等しければ true
+ */
 function equalECPubJWK(l, r) {
     if (!l && !r)
         return true;
@@ -8428,30 +8434,16 @@ function equalECPubJWK(l, r) {
         return false;
     return l.kid === r.kid && l.crv === r.crv && l.x === r.x && l.y === r.y;
 }
+/**
+ * EC 公開鍵を表現するクラス。
+ * 署名の検証や kid の命名など行える。
+ */
 class ECPubKey {
     constructor(_x, _y, _kid) {
         this._x = _x;
         this._y = _y;
         this._kid = _kid;
-    }
-    get kty() {
-        return 'EC';
-    }
-    async kid() {
-        if (this._kid) {
-            return this._kid;
-        }
-        const json = JSON.stringify({
-            crv: this.crv,
-            kty: this.kty,
-            x: this.x('b64u'),
-            y: this.y('b64u'),
-        });
-        const dgst = await SHA256(UTF8(json));
-        return BASE64URL(dgst);
-    }
-    get crv() {
-        return 'P-256';
+        this.crv = 'P-256';
     }
     x(format) {
         switch (format) {
@@ -8469,27 +8461,49 @@ class ECPubKey {
                 return this._y;
         }
     }
-    static async fromPrivKey(pk) {
-        return new ECPubKey(pk.x('oct'), pk.y('oct'), await pk.kid());
-    }
-    static fromJWK(jwk) {
-        return new ECPubKey(BASE64URL_DECODE(jwk.x), BASE64URL_DECODE(jwk.y), jwk.kid);
+    static async fromJWK(jwk) {
+        return new ECPubKey(BASE64URL_DECODE(jwk.x), BASE64URL_DECODE(jwk.y), jwk.kid ?? (await genKID(jwk)));
     }
     static is(arg) {
         return arg instanceof ECPubKey;
     }
-    async toJWK() {
+    /**
+     * この公開鍵を JWK で表現する。
+     * @returns EC公開鍵の JWK 表現
+     */
+    toJWK() {
         return {
-            kty: this.kty,
-            kid: await this.kid(),
+            kty: 'EC',
+            kid: this._kid,
             crv: this.crv,
             x: this.x('b64u'),
             y: this.y('b64u'),
         };
     }
+    /**
+     * この公開鍵を使って署名値の検証を行う
+     * @param m 署名対象のメッセージ
+     * @param s 署名値
+     * @returns 署名の検証に成功すれば true
+     */
     async verify(m, s) {
-        return ECP256.verify(await this.toJWK(), m, s);
+        return ECP256.verify(this.toJWK(), m, s);
     }
+}
+/**
+ * RFC 7638 - JSON Web Key (JWK) Thumbprint に基づいて kid を生成する。
+ * @param jwk KID 生成対象
+ * @returns jwk.kid
+ */
+async function genKID(jwk) {
+    const json = JSON.stringify({
+        crv: jwk.crv,
+        kty: jwk.kty,
+        x: jwk.x,
+        y: jwk.y,
+    });
+    const dgst = await SHA256(UTF8(json));
+    return BASE64URL(dgst);
 }
 
 function newService(id) {
@@ -8517,7 +8531,7 @@ class Service {
         }
         // cred のアテステーションを検証する.
         // 面倒なので アテステーションキーの検証は考慮していない
-        const pk_atts = ECPubKey.fromJWK(cred.atts.key);
+        const pk_atts = await ECPubKey.fromJWK(cred.atts.key);
         if (!(await pk_atts.verify(CONCAT(BASE64URL_DECODE(challenge_b64u), UTF8(JSON.stringify(cred.jwk))), BASE64URL_DECODE(cred.atts.sig_b64u)))) {
             // アテステーションの検証に失敗
             return false;
@@ -8540,7 +8554,7 @@ class Service {
             // アカウント登録済みなのに、 OVK を追加登録しようとしている
             return false;
         }
-        const ovk = ECPubKey.fromJWK(cm.getOVK());
+        const ovk = await ECPubKey.fromJWK(cm.getOVK());
         if (!(await ovk.verify(UTF8(JSON.stringify(cred.jwk)), BASE64URL_DECODE(ovkm.sig_b64u)))) {
             // OVK を使ってクレデンシャルの検証に失敗
             return false;
@@ -8561,7 +8575,7 @@ class Service {
         if (!cm || !cm.isCred(cred_jwk)) {
             return false;
         }
-        const cred = ECPubKey.fromJWK(cred_jwk);
+        const cred = await ECPubKey.fromJWK(cred_jwk);
         return cred.verify(BASE64URL_DECODE(challenge_b64u), BASE64URL_DECODE(sig_b64u));
     }
     async update(name, update_b64u, ovkm_next) {
@@ -8569,11 +8583,15 @@ class Service {
         if (!cm) {
             return false;
         }
-        const ovk = ECPubKey.fromJWK(cm.getOVK());
+        const ovk = await ECPubKey.fromJWK(cm.getOVK());
         if (!(await ovk.verify(UTF8(JSON.stringify(ovkm_next.ovk_jwk)), BASE64URL_DECODE(update_b64u)))) {
             return false;
         }
         return cm.addUpdating(ovkm_next.ovk_jwk, ovkm_next.r_b64u, ovkm_next.mac_b64u);
+    }
+    async delete(name) {
+        this.db[name] = undefined;
+        return;
     }
 }
 class CredManager {
@@ -8707,6 +8725,9 @@ const server = http.createServer(async (req, resp) => {
         else if (req.url?.endsWith('/access')) {
             action = 'access';
         }
+        else if (req.url?.endsWith('/reset')) {
+            action = 'reset';
+        }
         else {
             resp.writeHead(500, { 'Content-Type': 'application/json' });
             resp.end(JSON.stringify({ err: `no such action request-url: ${req.url}` }));
@@ -8756,6 +8777,19 @@ const server = http.createServer(async (req, resp) => {
                     resp.end(JSON.stringify(r));
                     console.log(`${req.url}:\n  req: ${JSON.stringify(data)}\n  resp: ${JSON.stringify(r)}`);
                     return;
+                }
+                case 'reset': {
+                    // デバック用にサービスの認証情報をリセットする
+                    if (!isStartAuthnRequestMessage(data)) {
+                        resp.writeHead(401, { 'Content-Type': 'application/json' });
+                        resp.end(JSON.stringify({ err: `formatting error: ${req.url}` }));
+                        console.log(`${req.url}: error with 401`);
+                        return;
+                    }
+                    await Svc.delete(data.username);
+                    resp.writeHead(200, { 'Content-Type': 'application/json' });
+                    resp.end();
+                    console.log(`${req.url}:\n  user: ${data.username}`);
                 }
             }
         });
