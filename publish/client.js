@@ -8866,7 +8866,7 @@ let Dev;
 window.document.getElementById('dev-name')?.addEventListener('submit', async function (e) {
     e.preventDefault();
     if (!(e instanceof SubmitEvent) || !(e.submitter instanceof HTMLButtonElement)) {
-        throw TypeError(`不正な HTML Document ${e}`);
+        throw new TypeError(`不正な HTML Document ${e}`);
     }
     // DOM Validation
     if (!(this instanceof HTMLFormElement)) {
@@ -8922,7 +8922,16 @@ window.document
     if (!(pwE instanceof HTMLInputElement)) {
         throw new TypeError(`不正なフィーム入力 ${pwE}`);
     }
-    const publish = await Dev.initSeedNegotiation(pwE.value, devIDE.value, partnerIDE.value, parseInt(devNumE.value), isUpdating());
+    const isupdating = isUpdating();
+    const publish = await Dev.initSeedNegotiation(pwE.value, devIDE.value, partnerIDE.value, parseInt(devNumE.value), isupdating);
+    // updating を行い始めたら、update toggle を diabled にする
+    if (isupdating) {
+        const sw = window.document.getElementById('seed-updating');
+        if (!(sw instanceof HTMLInputElement)) {
+            throw new TypeError(`不正な HTML Document ${sw}`);
+        }
+        sw.disabled = true;
+    }
     // ネゴシエート中の値を公開する
     const publishAreas = window.document.getElementById('seed-nego-publish');
     if (publishAreas &&
@@ -8971,6 +8980,13 @@ window.document.getElementById('seed-nego-form')?.addEventListener('submit', asy
         const completionSection = window.document.getElementById('seed-nego-complition');
         if (completionSection) {
             completionSection.hidden = false;
+        }
+        // シードの更新を行なった場合は その旨を表示する。
+        if (isUpdating()) {
+            const p = window.document.getElementById('seed-nego-complition-updated');
+            if (p) {
+                p.hidden = false;
+            }
         }
     }
 });

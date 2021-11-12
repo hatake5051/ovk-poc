@@ -14,7 +14,6 @@ const Services: Record<typeof svcList[number], Service> = svcList.reduce((obj, s
 }, {} as Record<string, Service>);
 
 const server = createServer(async (req, resp) => {
-  console.group('request ', req.url);
   // クライアント一式（静的ファイル）を返す。
   if (['/', '/index.html', '/client.js', '/pico.min.css'].includes(req.url ?? '')) {
     const filePath = './publish' + (!req.url || req.url === '/' ? '/index.html' : req.url);
@@ -33,13 +32,11 @@ const server = createServer(async (req, resp) => {
         resp.writeHead(500);
         resp.end('Sorry, check with the site admin for error: ' + err.code + ' ..\n');
         resp.end();
-        console.log(`error with 500`);
-        console.groupEnd();
+        console.log(`${req.url}: error with 500`);
       } else {
         resp.writeHead(200, { 'Content-Type': contentType });
         resp.end(content, 'utf-8');
-        console.log(`ファイルを返した`);
-        console.groupEnd();
+        console.log(`${req.url}: return the static file`);
       }
     });
     return;
@@ -70,8 +67,7 @@ const server = createServer(async (req, resp) => {
     } else {
       resp.writeHead(500, { 'Content-Type': 'application/json' });
       resp.end(JSON.stringify({ err: `no such action request-url: ${req.url}` }));
-      console.log(`error with 500`);
-      console.groupEnd();
+      console.log(`${req.url}: error with 500`);
       return;
     }
     const Svc = Services[svc];
@@ -83,45 +79,39 @@ const server = createServer(async (req, resp) => {
           if (!isStartAuthnRequestMessage(data)) {
             resp.writeHead(401, { 'Content-Type': 'application/json' });
             resp.end(JSON.stringify({ err: `formatting error: ${req.url}` }));
-            console.log(`error with 401`);
-            console.groupEnd();
+            console.log(`${req.url}: error with 401`);
             return;
           }
           const r = await Svc.startAuthn(data.username);
           resp.writeHead(200, { 'Content-Type': 'application/json' });
           resp.end(JSON.stringify(r));
-          console.log(`req: ${JSON.stringify(data)}, resp: ${JSON.stringify(r)}`);
-          console.groupEnd();
+          console.log(`${req.url}:\n  req: ${JSON.stringify(data)}\n  resp: ${JSON.stringify(r)}`);
           return;
         }
         case 'register': {
           if (!isRegistrationRequestMessage(data)) {
             resp.writeHead(401, { 'Content-Type': 'application/json' });
             resp.end(JSON.stringify({ err: `formatting error: ${req.url}` }));
-            console.log(`error with 401`);
-            console.groupEnd();
+            console.log(`${req.url}:: error with 401`);
             return;
           }
           const r = await Svc.register(data.username, data.cred, data.ovkm);
           resp.writeHead(200, { 'Content-Type': 'application/json' });
           resp.end(JSON.stringify(r));
-          console.log(`req: ${JSON.stringify(data)}, resp: ${JSON.stringify(r)}`);
-          console.groupEnd();
+          console.log(`${req.url}:\n  req: ${JSON.stringify(data)}\n  resp: ${JSON.stringify(r)}`);
           return;
         }
         case 'login': {
           if (!isAuthnRequestMessage(data)) {
             resp.writeHead(401, { 'Content-Type': 'application/json' });
             resp.end(JSON.stringify({ err: `formatting error: ${req.url}` }));
-            console.log(`error with 401`);
-            console.groupEnd();
+            console.log(`${req.url}: error with 401`);
             return;
           }
           const r = await Svc.authn(data.username, data.cred_jwk, data.sig_b64u, data.updating);
           resp.writeHead(200, { 'Content-Type': 'application/json' });
           resp.end(JSON.stringify(r));
-          console.log(`req: ${JSON.stringify(data)}, resp: ${JSON.stringify(r)}`);
-          console.groupEnd();
+          console.log(`${req.url}:\n  req: ${JSON.stringify(data)}\n  resp: ${JSON.stringify(r)}`);
           return;
         }
       }
@@ -131,8 +121,7 @@ const server = createServer(async (req, resp) => {
 
   resp.writeHead(404);
   resp.end();
-  console.log(`error with 404`);
-  console.groupEnd();
+  console.log(`${req.url}: error with 404`);
 });
 
 server.listen(8080);
