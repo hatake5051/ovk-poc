@@ -21,7 +21,5 @@
     "build:server": "tsc",
     "postbuild:server": "./translate.sh && rollup --config rollup/server.config.js"
   },
-  "dependencies": {
-    "elliptic": "^6.5.4"
-  }
+  "dependencies": {}
 }

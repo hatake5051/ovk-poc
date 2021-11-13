@@ -1,14 +1,7 @@
 import { ECPirvJWK, ECPrivKey, ECPubJWK, ECPubKey, equalECPubJWK } from 'key';
 import { Seed } from 'seed';
-import {
-  BASE64URL,
-  BASE64URL_DECODE,
-  CONCAT,
-  PBES2JWE,
-  RandUint8Array,
-  UTF8,
-  UTF8_DECODE,
-} from 'utility';
+import { BASE64URL, BASE64URL_DECODE, CONCAT, UTF8, UTF8_DECODE } from 'utility';
+import { PBES2JWE, RandUint8Array } from 'utility/crypto';
 
 export class Device {
   private constructor(

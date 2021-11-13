@@ -1,4 +1,5 @@
-import { BASE64URL, BASE64URL_DECODE, ECP256, isObject, SHA256, UTF8 } from 'utility';
+import { BASE64URL, BASE64URL_DECODE, isObject, UTF8 } from 'utility';
+import { ECP256, SHA256 } from 'utility/crypto';
 
 /**
  * EC 公開鍵 をJWKで表現する

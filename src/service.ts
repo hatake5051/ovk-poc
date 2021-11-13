@@ -1,5 +1,6 @@
 import { ECPubJWK, ECPubKey, equalECPubJWK } from 'key';
-import { BASE64URL, BASE64URL_DECODE, CONCAT, RandUint8Array, UTF8 } from 'utility';
+import { BASE64URL, BASE64URL_DECODE, CONCAT, UTF8 } from 'utility';
+import { RandUint8Array } from 'utility/crypto';
 
 export function newService(id: string): Service {
   return new Service(id);

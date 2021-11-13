@@ -1,5 +1,6 @@
 import { ECPirvJWK, ECPrivKey, ECPubJWK, ECPubKey } from 'key';
-import { BASE64URL_DECODE, CONCAT, HKDF, HMAC, UTF8 } from 'utility';
+import { BASE64URL_DECODE, CONCAT, UTF8 } from 'utility';
+import { HKDF, HMAC } from 'utility/crypto';
 
 export type Seed = SeedDeriver & SeedNegotiator & SeedUpdater;
 
