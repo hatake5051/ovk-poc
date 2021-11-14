@@ -16,10 +16,11 @@
   },
   "scripts": {
     "start": "node publish/server.js",
-    "build:client": "tsc",
-    "postbuild:client": "rollup --config rollup/client.config.js",
-    "build:server": "tsc",
-    "postbuild:server": "./translate.sh && rollup --config rollup/server.config.js"
-  },
-  "dependencies": {}
+    "build:local": "npm run build:client:local && npm run build:server:local",
+    "build:vm": "npm run build:client:vm && npm run build:server:vm",
+    "build:client:local": "tsc && ./translate.sh client local && rollup --config rollup/client.config.js",
+    "build:server:local": "tsc && ./translate.sh server local && rollup --config rollup/server.config.js",
+    "build:client:vm": "tsc && ./translate.sh client vm && rollup --config rollup/client.config.js",
+    "build:server:vm": "tsc && ./translate.sh server vm && rollup --config rollup/server.config.js"
+  }
 }

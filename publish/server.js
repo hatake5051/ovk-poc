@@ -532,7 +532,7 @@ async function genKID(jwk) {
 }
 
 // マイグレーション時間は 3分 にしておく
-const migrating_date_ms = 1 * 60 * 1000;
+const migrating_date_ms = 3 * 60 * 1000;
 /**
  * 認証機能を持つサービスで、 OVK を利用したクレデンシャルの登録に対応している
  */
@@ -556,12 +556,15 @@ class Service {
      * @returns 登録済みなら登録済みクレデンシャルと ovk を返し、未登録ならチャレンジだけ返す
      */
     async startAuthn(name) {
+        // チャレンジを生成して、一時的に保存する。
         const challenge = RandUint8Array(32);
         this.challengeDB[name] = [BASE64URL(challenge)];
         const cm = this.db[name];
         if (!cm) {
+            // 未登録ユーザなので、 chellenge だけ返す
             return { challenge_b64u: BASE64URL(challenge) };
         }
+        // 登録ユーザはクレデンシャル情報を含めて返す
         return { challenge_b64u: BASE64URL(challenge), ...cm.getCreds() };
     }
     /**
@@ -623,12 +626,9 @@ class Service {
      * @returns 認証に成功すれば true
      */
     async authn(name, cred_jwk, sig_b64u, updating) {
-        console.log('Service.authn');
         if (updating) {
             // updating メッセージがあればそれを処理する
-            console.log('Service.authn... updating');
             if (!(await this.update(name, cred_jwk, updating.update_b64u, updating.ovkm))) {
-                console.log('Service.authn... updating -> false');
                 return false;
             }
         }
@@ -654,14 +654,16 @@ class Service {
     async update(name, cred_jwk, update_b64u, ovkm_next) {
         const cm = this.db[name];
         if (!cm) {
+            // 未登録ユーザの update 処理はしない
             return false;
         }
+        // 現在信頼している OVK を取得して
         const ovk = await ECPubKey.fromJWK(cm.getOVK());
-        if (!(await ovk.verify(UTF8(JSON.stringify(ovkm_next.ovk_jwk)), BASE64URL_DECODE(update_b64u)))) {
-            console.log('ovk.verify failed', ovk, ovkm_next.ovk_jwk, update_b64u);
+        if (
+        // 新しい OVK 候補が以前の OVK で署名しているか検証する
+        !(await ovk.verify(UTF8(JSON.stringify(ovkm_next.ovk_jwk)), BASE64URL_DECODE(update_b64u)))) {
             return false;
         }
-        console.log('Service.update');
         return cm.addUpdating(cred_jwk, ovkm_next.ovk_jwk, ovkm_next.r_b64u, ovkm_next.mac_b64u);
     }
     /**
@@ -707,18 +709,18 @@ class CredManager {
         return true;
     }
     /**
-     * OVK の更新が行われている途中かどうか判定する
+     * OVK の更新が行われている途中かどうか判定する。
+     * 更新時刻を超えていれば、 OVK 更新処理をする。
      * @returns 更新中なら true
      */
     isUpdating() {
-        console.log('invokes isUpdating()');
+        // update メッセージがひとつも届いていないなら updating 中ではない
         if (!this.next) {
             return false;
         }
         // 更新中で、更新期間内であれば true
         const now = Date.now();
         if (now - this.next.startTime <= migrating_date_ms) {
-            console.log(`isupdating = true, because ${now - this.next.startTime} < ${migrating_date_ms}`);
             return true;
         }
         // 時刻が migration 開始時刻から指定の時間だけ過ぎていれば、
@@ -740,12 +742,13 @@ class CredManager {
             ovks[0].push(c.ovk);
             return ovks;
         }, [[]]);
-        console.log(ovks);
         let ovk;
         if (ovks[ovks.length - 1].length === 1) {
+            // 一番多くクレデンシャルと紐づく ovk を採用
             ovk = ovks[ovks.length - 1][0];
         }
         else {
+            // 一番多くクレデンシャルと紐づく ovk が複数ある時は、早く登録された方を選択する。
             let registered;
             for (const candidate of ovks[ovks.length - 1]) {
                 // candidate はもともとの OVK かもしれないので、その時は next に含まれていない。
