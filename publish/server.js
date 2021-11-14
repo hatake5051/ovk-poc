@@ -3,6 +3,10 @@
 var fs = require('fs');
 var http = require('http');
 
+/**
+ * node では webcryoto がライブラリで提供されているのでそれを使う。
+ * BASE64 関連は Buffer で実装する。
+ */
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { subtle, getRandomValues } = require('crypto').webcrypto;
 /**
@@ -25,16 +29,41 @@ const RuntimeUtility = {
 };
 
 /**
- * 文字列を UTF8 バイトエンコードする。(string to Uint8Array)
+ * 文字列を UTF8 バイト列に変換する
+ * @param STRING 変換対象の文字列
+ * @returns STRING の UTF8 バイト列
  */
 function UTF8(STRING) {
     const encoder = new TextEncoder();
     return encoder.encode(STRING);
 }
+/**
+ * 16進数の文字列を Uint8Array に変換する。
+ * len を与えない時は hexstr の長さにする。
+ * @param hexstr 16進数の文字列
+ * @param len 求めるバイナリ列の長さ。 hexstr の方が大きい時は TypeError を投げる。
+ * hexstr の方が短い時は先頭を 0 padding する。
+ * @returns hexstr を Uint8Array で表現したもの
+ */
 function HexStr2Uint8Array(hexstr, len) {
-    let ans_str = hexstr;
-    if (hexstr.length < len * 2) {
-        ans_str = '0'.repeat(len * 2 - hexstr.length) + hexstr;
+    // len があれば、hexstr で足りない分を先頭 0 padding する。
+    // len がないなら、 hexstr が奇数長の場合に先頭 0 padding する
+    let ans_str;
+    if (len) {
+        if (hexstr.length <= len * 2) {
+            ans_str = '0'.repeat(len * 2 - hexstr.length) + hexstr;
+        }
+        else {
+            throw new TypeError(`hexstr が len よりも長い`);
+        }
+    }
+    else {
+        if (hexstr.length % 2 === 1) {
+            ans_str = '0' + hexstr;
+        }
+        else {
+            ans_str = hexstr;
+        }
     }
     const ans_length = ans_str.length / 2;
     const ans = new Uint8Array(ans_length);
@@ -43,6 +72,13 @@ function HexStr2Uint8Array(hexstr, len) {
     }
     return ans;
 }
+/**
+ * Uint8Array を16進数文字列に変換する。
+ * @param arr バイナリ列
+ * @param len 16進数文字列にした時のバイナリ長(結果は len の2倍の文字列になる)。
+ * arr の方が長い時は TypeError をながる。 arr の方が短い時は先頭を 00-padding する。
+ * @returns arr を16進数表現した文字列
+ */
 function Uint8Array2HexStr(arr, len) {
     const str_arr = Array.from(arr).map(function (e) {
         let hexchar = e.toString(16);
@@ -51,11 +87,18 @@ function Uint8Array2HexStr(arr, len) {
         }
         return hexchar;
     });
-    let ans = str_arr.join('');
-    if (ans.length < len * 2) {
-        ans = '0'.repeat(len * 2 - ans.length) + ans;
+    const ans = str_arr.join('');
+    if (len) {
+        if (ans.length <= len * 2) {
+            return '0'.repeat(len * 2 - ans.length) + ans;
+        }
+        else {
+            throw new TypeError(`arr が len よりも長い`);
+        }
     }
-    return ans;
+    else {
+        return ans;
+    }
 }
 /**
  * ２つのバイト列を結合する
@@ -73,10 +116,12 @@ function CONCAT(A, B) {
 const isObject = (value) => typeof value === 'object' && value !== null;
 /**
  * バイト列を BASE64URL エンコードする (Uint8Array to string)
+ * browser なら window.btoa で実装し、 node なら Buffer で実装する。
  */
 const BASE64URL = RuntimeUtility.BASE64URL;
 /**
  * バイト列に BASE64URL デコードする (string to Uint8Array)
+ * browser なら window.atob で実装し、 node なら Buffer で実装する。
  */
 const BASE64URL_DECODE = RuntimeUtility.BASE64URL_DECODE;
 
@@ -91,8 +136,9 @@ function RandUint8Array(len) {
 
 const isInfinitePoint = (arg) => arg === 'O';
 /**
- * SEC1#2.2.1 Elliptic Curves over F_p
- * bigint は暗号処理に向かないため、本番運用は避けるべきである。
+ * SEC1#2.2.1 Elliptic Curves over F_p を実装する。
+ * E(F_p): y^2 = x^3 + ax + b (mod p)なので、パラメータは a,b,p
+ * 実装に当たっては bigint を利用しているが、bigint は暗号処理に向かないため、本番運用は避けるべきである。
  * c.f.) https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/BigInt#cryptography
  */
 class PCurve {
@@ -101,6 +147,12 @@ class PCurve {
         this.b = b;
         this.p = p;
     }
+    /**
+     * k * p を行う
+     * @param p 楕円曲線上の点
+     * @param k 整数 in [1,p-1]
+     * @returns p を k 回足した結果 k*p
+     */
     exp(p, k) {
         const absk = k < 0n ? -k : k;
         const k_bin = absk.toString(2);
@@ -116,6 +168,11 @@ class PCurve {
         }
         return ans;
     }
+    /**
+     * 点 P が楕円曲線のものか判定する。
+     * @param P 楕円曲線の点と思われるもの
+     * @returns 楕円曲線の点なら true
+     */
     isPoint(P) {
         if (isInfinitePoint(P)) {
             return true;
@@ -124,9 +181,23 @@ class PCurve {
         if (x < 0n || this.p <= x || y < 0n || this.p <= y) {
             return false;
         }
-        const left = mod(y * y, this.p);
-        const right = mod(mul(dbl(x, this.p), x, this.p) + mul(this.a, x, this.p) + this.b, this.p);
+        // y^2
+        const left = this.dbl(y);
+        // x^3 + ax + b
+        const right = this.mod(this.mul(this.dbl(x), x) + this.mul(this.a, x) + this.b);
         return left === right;
+    }
+    mod(a) {
+        return mod(a, this.p);
+    }
+    mul(a, b) {
+        return mul(a, b, this.p);
+    }
+    dbl(a) {
+        return dbl(a, this.p);
+    }
+    inv(a) {
+        return inv(a, this.p);
     }
     /**
      * 楕円曲線上の２点の加算を定義する
@@ -146,7 +217,7 @@ class PCurve {
         }
         // x座標が同じで y座標が異なるか0の時は、無限遠点
         // すなわち (x,y) の逆元 - (x,y) === (x, -y)
-        if (mod(p1.y + p2.y, this.p) === 0n) {
+        if (this.mod(p1.y + p2.y) === 0n) {
             return 'O';
         }
         // x座標が異なる場合は
@@ -156,6 +227,11 @@ class PCurve {
         // x座標が同じ場合(すなわち2倍)
         return this.doubleFinitePoint(p1);
     }
+    /**
+     * 2倍算を定義する。
+     * @param p 楕円曲線の点
+     * @returns p + p
+     */
     double(p) {
         if (isInfinitePoint(p)) {
             return 'O';
@@ -167,28 +243,37 @@ class PCurve {
         if (p1.x === p2.x) {
             throw new EvalError(`addDiffPoints function は異なる２点の加算しか行えません`);
         }
-        const lambda = mul(p2.y - p1.y, inv(p2.x - p1.x, this.p), this.p);
-        const x3 = mod(dbl(lambda, this.p) - p1.x - p2.x, this.p);
-        const y3 = mod(mul(lambda, p1.x - x3, this.p) - p1.y, this.p);
+        const lambda = this.mul(p2.y - p1.y, this.inv(p2.x - p1.x));
+        const x3 = this.mod(this.dbl(lambda) - p1.x - p2.x);
+        const y3 = this.mod(this.mul(lambda, p1.x - x3) - p1.y);
         return { x: x3, y: y3 };
     }
     // 有限点の2倍を計算する。
     doubleFinitePoint(p) {
-        const lambda = mul(3n * dbl(p.x, this.p) + this.a, inv(2n * p.y, this.p), this.p);
-        const x3 = mod(dbl(lambda, this.p) - 2n * p.x, this.p);
-        const y3 = mod(mul(lambda, p.x - x3, this.p) - p.y, this.p);
+        const lambda = this.mul(3n * this.dbl(p.x) + this.a, this.inv(2n * p.y));
+        const x3 = this.mod(this.dbl(lambda) - 2n * p.x);
+        const y3 = this.mod(this.mul(lambda, p.x - x3) - p.y);
         return { x: x3, y: y3 };
     }
 }
+/**
+ * a (mod n)
+ */
 const mod = (a, n) => {
     const ans = a % n;
     return ans < 0 ? ans + n : ans;
 };
+/**
+ * a * b (mod n)
+ */
 const mul = (a, b, n) => mod(a * b, n);
+/**
+ * a^2 (mod n)
+ */
 const dbl = (a, n) => mod(a * a, n);
-// 法 n のもと、元 a の逆元を返す関数。逆元がなければエラー。
-// inputs: a,n: 整数 (BigInt)
-// output: a^(-1) mod n があればそれを返す。
+/**
+ * a^(-1) (mod n) で逆元がなければエラー
+ */
 function inv(a, n) {
     // 拡張ユークリッドの誤除法
     // inputs: a,b: 正整数 (BigInt)
@@ -212,6 +297,9 @@ function inv(a, n) {
     }
     return z.x % n;
 }
+/**
+ * 楕円曲線の鍵ペアを実装する。
+ */
 class KeyPair {
     constructor(T, d, Q) {
         this.T = T;
@@ -226,9 +314,8 @@ class KeyPair {
      */
     static gen(T, d) {
         if (!d) {
-            const len = T.n.toString(16).length;
-            const d_u8a = RandUint8Array(len / 2);
-            d = BigInt('0x' + Uint8Array2HexStr(d_u8a, len / 2));
+            const d_u8a = RandUint8Array(T.n.toString(16).length / 2);
+            d = BigInt('0x' + Uint8Array2HexStr(d_u8a));
         }
         else if (d < 0n || T.n <= d) {
             throw new TypeError(`秘密鍵のサイズが不適切`);
@@ -259,15 +346,18 @@ class KeyPair {
         return true;
     }
     toJWK(isPublic = false) {
-        const x = BASE64URL(HexStr2Uint8Array(this.Q.x.toString(16), 32));
-        const y = BASE64URL(HexStr2Uint8Array(this.Q.y.toString(16), 32));
+        const x = BASE64URL(HexStr2Uint8Array(this.Q.x.toString(16), this.T.n.toString(16).length / 2));
+        const y = BASE64URL(HexStr2Uint8Array(this.Q.y.toString(16), this.T.n.toString(16).length / 2));
         if (isPublic) {
             return { kty: 'EC', crv: this.T.name.jwk, x, y };
         }
-        const d = BASE64URL(HexStr2Uint8Array(this.d.toString(16), 32));
+        const d = BASE64URL(HexStr2Uint8Array(this.d.toString(16), this.T.n.toString(16).length / 2));
         return { kty: 'EC', crv: this.T.name.jwk, x, y, d };
     }
 }
+/**
+ * secp256r1 のドメインパラメータ
+ */
 const secp256r1 = {
     name: { jwk: 'P-256' },
     crv: new PCurve(BigInt('0xffffffff00000001000000000000000000000000fffffffffffffffffffffffc'), BigInt('0x5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b'), BigInt('0xffffffff00000001000000000000000000000000ffffffffffffffffffffffff')),
@@ -279,24 +369,59 @@ const secp256r1 = {
     h: 1n,
 };
 
+/**
+ * SHA-256 ハッシュ関数を実装する。
+ * @param m メッセージ
+ * @returns メッセージの SHA-256 ハッシュ値
+ */
 const SHA256 = async (m) => {
     const dgst = await RuntimeUtility.subtle.digest('SHA-256', m);
     return new Uint8Array(dgst);
 };
+/**
+ * ECDSA over P-256 を実装する。
+ * gen で EC 秘密鍵を生成もしくは、秘密鍵から公開鍵を導出する。
+ * sign で署名を行い、 verify で署名を検証する。
+ * dh で DH 計算を行う。
+ */
 const ECP256 = {
+    /**
+     * 秘密鍵を生成する。
+     * @param secret 秘密鍵成分
+     * @returns 秘密鍵成分から導出した公開鍵を含む秘密鍵
+     */
     async gen(secret) {
         const d = secret ? BigInt('0x' + Uint8Array2HexStr(secret, secret.length)) : undefined;
         return KeyPair.gen(secp256r1, d).toJWK();
     },
+    /**
+     * 秘密鍵でメッセージの署名値を作成する。
+     * @param sk EC秘密鍵
+     * @param m メッセージ
+     * @returns 署名値
+     */
     async sign(sk, m) {
         const k_api = await RuntimeUtility.subtle.importKey('jwk', sk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
         const sig = await RuntimeUtility.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, k_api, m);
         return new Uint8Array(sig);
     },
+    /**
+     * 公開鍵で署名を検証する。
+     * @param pk EC公開鍵
+     * @param m メッセージ
+     * @param s 署名値
+     * @returns 署名が正しければ true
+     */
     async verify(pk, m, s) {
         const k = await RuntimeUtility.subtle.importKey('jwk', pk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
         return await RuntimeUtility.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, k, s, m);
     },
+    /**
+     * DH計算を行う。
+     * @param pk EC 公開鍵成分
+     * @param sk EC 秘密鍵成分
+     * @returns sk * pk した結果
+     */
     async dh(pk, sk) {
         const privKey = KeyPair.gen(secp256r1, BigInt('0x' + Uint8Array2HexStr(BASE64URL_DECODE(sk.d), 32)));
         const pubKey = {
@@ -358,11 +483,14 @@ class ECPubKey {
                 return this._y;
         }
     }
+    /**
+     * JWK 形式の EC 公開鍵から ECPubKey を生成する.
+     * kid が JWK 似なければ JWK Thumbprint に従って kid も生成する。
+     * @param jwk JWK 形式の公開鍵
+     * @returns
+     */
     static async fromJWK(jwk) {
         return new ECPubKey(BASE64URL_DECODE(jwk.x), BASE64URL_DECODE(jwk.y), jwk.kid ?? (await genKID(jwk)));
-    }
-    static is(arg) {
-        return arg instanceof ECPubKey;
     }
     /**
      * この公開鍵を JWK で表現する。
@@ -403,15 +531,30 @@ async function genKID(jwk) {
     return BASE64URL(dgst);
 }
 
-function newService(id) {
-    return new Service(id);
-}
+// マイグレーション時間は 3分 にしておく
+const migrating_date_ms = 1 * 60 * 1000;
+/**
+ * 認証機能を持つサービスで、 OVK を利用したクレデンシャルの登録に対応している
+ */
 class Service {
     constructor(id) {
         this.id = id;
         this.db = {};
         this.challengeDB = {};
     }
+    /**
+     * サービスを作成する
+     * @param id サービス識別子
+     * @returns サービス
+     */
+    static gen(id) {
+        return new Service(id);
+    }
+    /**
+     * 認証リクエストを処理する。
+     * @param name ユーザ名
+     * @returns 登録済みなら登録済みクレデンシャルと ovk を返し、未登録ならチャレンジだけ返す
+     */
     async startAuthn(name) {
         const challenge = RandUint8Array(32);
         this.challengeDB[name] = [BASE64URL(challenge)];
@@ -421,13 +564,20 @@ class Service {
         }
         return { challenge_b64u: BASE64URL(challenge), ...cm.getCreds() };
     }
+    /**
+     * ユーザを登録する or クレデンシャルを追加する
+     * @param name ユーザ名
+     * @param cred 登録するクレデンシャル
+     * @param ovkm Ownership Verification Key Material
+     * @returns 登録に成功すると true
+     */
     async register(name, cred, ovkm) {
         const challenge_b64u = this.challengeDB[name].pop();
         if (!challenge_b64u) {
             return false;
         }
         // cred のアテステーションを検証する.
-        // 面倒なので アテステーションキーの検証は考慮していない
+        // 面倒なので アテステーションキー自体の検証は考慮していない
         const pk_atts = await ECPubKey.fromJWK(cred.atts.key);
         if (!(await pk_atts.verify(CONCAT(BASE64URL_DECODE(challenge_b64u), UTF8(JSON.stringify(cred.jwk))), BASE64URL_DECODE(cred.atts.sig_b64u)))) {
             // アテステーションの検証に失敗
@@ -435,6 +585,7 @@ class Service {
         }
         let cm = this.db[name];
         if (!cm) {
+            // ユーザデータベースにないので、新規登録を開始する
             if ('ovk_jwk' in ovkm) {
                 // アカウント初期登録
                 cm = CredManager.init(cred.jwk, ovkm);
@@ -451,6 +602,11 @@ class Service {
             // アカウント登録済みなのに、 OVK を追加登録しようとしている
             return false;
         }
+        if (cm.isUpdating()) {
+            // アカウントの OVK が更新中 なので、クレデンシャルの新規登録は受け付けられない
+            return false;
+        }
+        // OVK を利用してクレデンシャルの検証を行う。
         const ovk = await ECPubKey.fromJWK(cm.getOVK());
         if (!(await ovk.verify(UTF8(JSON.stringify(cred.jwk)), BASE64URL_DECODE(ovkm.sig_b64u)))) {
             // OVK を使ってクレデンシャルの検証に失敗
@@ -458,9 +614,21 @@ class Service {
         }
         return cm.add(cred.jwk);
     }
+    /**
+     * ユーザを認証する。
+     * @param name ユーザ名
+     * @param cred_jwk 今回利用したクレデンシャル
+     * @param sig_b64u チャレンジレスポンス
+     * @param updating OVKの更新を行うなら、それら情報
+     * @returns 認証に成功すれば true
+     */
     async authn(name, cred_jwk, sig_b64u, updating) {
+        console.log('Service.authn');
         if (updating) {
-            if (!(await this.update(name, updating.update_b64u, updating.ovkm))) {
+            // updating メッセージがあればそれを処理する
+            console.log('Service.authn... updating');
+            if (!(await this.update(name, cred_jwk, updating.update_b64u, updating.ovkm))) {
+                console.log('Service.authn... updating -> false');
                 return false;
             }
         }
@@ -469,65 +637,196 @@ class Service {
             return false;
         }
         const cm = this.db[name];
+        // このユーザのクレデンシャルが存在しないか、また送られてきたクレデンシャルが登録済みでないなら
         if (!cm || !cm.isCred(cred_jwk)) {
             return false;
         }
         const cred = await ECPubKey.fromJWK(cred_jwk);
         return cred.verify(BASE64URL_DECODE(challenge_b64u), BASE64URL_DECODE(sig_b64u));
     }
-    async update(name, update_b64u, ovkm_next) {
+    /**
+     * updating を行う
+     * @param name ユーザ名
+     * @param update_b64u update メッセージ
+     * @param ovkm_next 更新先の OVKM
+     * @returns update の処理に成功すれば true
+     */
+    async update(name, cred_jwk, update_b64u, ovkm_next) {
         const cm = this.db[name];
         if (!cm) {
             return false;
         }
         const ovk = await ECPubKey.fromJWK(cm.getOVK());
         if (!(await ovk.verify(UTF8(JSON.stringify(ovkm_next.ovk_jwk)), BASE64URL_DECODE(update_b64u)))) {
+            console.log('ovk.verify failed', ovk, ovkm_next.ovk_jwk, update_b64u);
             return false;
         }
-        return cm.addUpdating(ovkm_next.ovk_jwk, ovkm_next.r_b64u, ovkm_next.mac_b64u);
+        console.log('Service.update');
+        return cm.addUpdating(cred_jwk, ovkm_next.ovk_jwk, ovkm_next.r_b64u, ovkm_next.mac_b64u);
     }
+    /**
+     * ユーザを削除する。
+     * @param name ユーザ名
+     */
     async delete(name) {
         this.db[name] = undefined;
         return;
     }
 }
+/**
+ * ユーザごとのクレデンシャル と OVK を管理する
+ */
 class CredManager {
-    constructor(creds, ovkm, next) {
+    constructor(
+    // jwk がクレデンシャルの JWK 表現で、紐づく ovk と一緒に保存
+    creds, 
+    // 現在信頼している OVK とメタデータ
+    ovkm, 
+    // OVK の migate を行う途中に登録された OVK たち
+    next) {
         this.creds = creds;
         this.ovkm = ovkm;
         this.next = next;
     }
+    /**
+     * アカウント新規登録時に、そのユーザに対して CredManeger を生成する。
+     * @param cred_jwk 登録する１つめのクレデンシャル
+     * @param ovkm 登録する OVK
+     */
     static init(cred_jwk, ovkm) {
         return new CredManager([{ jwk: cred_jwk, ovk: ovkm.ovk_jwk }], ovkm);
     }
-    add(cred_jwk, ovk_jwk) {
-        const ovk = ovk_jwk ?? this.getOVK();
+    /**
+     * OVK で検証が行われたクレデンシャルを追加登録する
+     * @param cred_jwk
+     * @returns
+     */
+    add(cred_jwk) {
+        const ovk = this.getOVK();
         this.creds.push({ jwk: cred_jwk, ovk });
         return true;
     }
-    addUpdating(ovk_jwk, r_b64u, mac_b64u) {
+    /**
+     * OVK の更新が行われている途中かどうか判定する
+     * @returns 更新中なら true
+     */
+    isUpdating() {
+        console.log('invokes isUpdating()');
         if (!this.next) {
-            this.next = [];
+            return false;
         }
-        if (!this.next.some((next) => equalECPubJWK(next.ovk_jwk, ovk_jwk))) {
-            this.next.push({ ovk_jwk, r_b64u, mac_b64u });
+        // 更新中で、更新期間内であれば true
+        const now = Date.now();
+        if (now - this.next.startTime <= migrating_date_ms) {
+            console.log(`isupdating = true, because ${now - this.next.startTime} < ${migrating_date_ms}`);
+            return true;
+        }
+        // 時刻が migration 開始時刻から指定の時間だけ過ぎていれば、
+        // この時点で一番多くクレデンシャルと紐づく OVK を信頼する。
+        // 同数の場合は、早く登録された方を信頼する。
+        const ovks = this.creds.reduce((ovks, c) => {
+            for (let count = 0; count < ovks.length; count++) {
+                for (let idx = 0; idx < ovks[count].length; idx++) {
+                    if (equalECPubJWK(c.ovk, ovks[count][idx])) {
+                        if (ovks[count + 1]) {
+                            ovks[count + 1].push(c.ovk);
+                        }
+                        else {
+                            ovks[count + 1] = [c.ovk];
+                        }
+                    }
+                }
+            }
+            ovks[0].push(c.ovk);
+            return ovks;
+        }, [[]]);
+        console.log(ovks);
+        let ovk;
+        if (ovks[ovks.length - 1].length === 1) {
+            ovk = ovks[ovks.length - 1][0];
+        }
+        else {
+            let registered;
+            for (const candidate of ovks[ovks.length - 1]) {
+                // candidate はもともとの OVK かもしれないので、その時は next に含まれていない。
+                // その場合は登録時刻が undefined になる。
+                const r = this.next.candidates.find((c) => equalECPubJWK(candidate, c.ovk_jwk))?.firstTime;
+                if (!registered || (r && r < registered)) {
+                    registered = r;
+                    ovk = candidate;
+                }
+            }
+        }
+        const ovkm = this.next.candidates.find((c) => equalECPubJWK(c.ovk_jwk, ovk)) ?? this.ovkm;
+        this.ovkm = ovkm;
+        this.next = undefined;
+        this.creds = this.creds.filter((c) => equalECPubJWK(c.ovk, ovk));
+        console.log(this.ovkm, this.next, this.creds);
+        return false;
+    }
+    addUpdating(cred_jwk, ovk_jwk, r_b64u, mac_b64u) {
+        // cred_jwk に対応する ovk を更新するため、インデックスを取得する
+        const idx = this.creds.findIndex((c) => equalECPubJWK(c.jwk, cred_jwk));
+        if (idx === -1) {
+            // cred_jwk が登録済みでない場合は無視
+            return false;
+        }
+        // cred_jwk に対応する ovk を更新
+        this.creds[idx].ovk = ovk_jwk;
+        // ovk_jwk を next に追加する
+        const now = Date.now();
+        if (!this.next) {
+            this.next = { candidates: [], startTime: now };
+        }
+        // next に 更新先の候補である ovk_jwk が登録済みかチェック
+        if (!this.next.candidates.some((next) => equalECPubJWK(next.ovk_jwk, ovk_jwk))) {
+            this.next.candidates.push({ ovk_jwk, r_b64u, mac_b64u, firstTime: now });
+        }
+        // 登録済みのクレデンシャルの数
+        const cred_num = this.creds.length;
+        // 更新先の候補である ovk_jwk に紐づくクレデンシャルの数
+        const next_ovk_num = this.creds.filter((c) => equalECPubJWK(c.ovk, ovk_jwk)).length;
+        if (cred_num / 2 < next_ovk_num) {
+            // 登録済みクレデンシャルの過半数が賛同したので、その OVK を信用する。
+            this.ovkm = { ovk_jwk, r_b64u, mac_b64u };
+            this.next = undefined;
+            this.creds = this.creds.filter((c) => equalECPubJWK(c.ovk, ovk_jwk));
         }
         return true;
     }
     getCreds() {
+        if (this.isUpdating()) {
+            return {
+                creds: this.creds.map((c) => c.jwk),
+                ovkm: {
+                    ovk_jwk: this.ovkm.ovk_jwk,
+                    r_b64u: this.ovkm.r_b64u,
+                    mac_b64u: this.ovkm.mac_b64u,
+                    next: this.next?.candidates,
+                },
+            };
+        }
         return {
             creds: this.creds.map((c) => c.jwk),
             ovkm: {
                 ovk_jwk: this.ovkm.ovk_jwk,
                 r_b64u: this.ovkm.r_b64u,
                 mac_b64u: this.ovkm.mac_b64u,
-                next: this.next,
             },
         };
     }
+    /**
+     * クレデンシャルが登録済みか判定する
+     * @param cred_jwk 登録済みと思われるクレデンシャル
+     * @returns 登録済みなら true
+     */
     isCred(cred_jwk) {
         return this.creds.some((c) => equalECPubJWK(c.jwk, cred_jwk));
     }
+    /**
+     *
+     * @returns
+     */
     getOVK() {
         return this.ovkm.ovk_jwk;
     }
@@ -558,7 +857,7 @@ const isAuthnRequestMessage = (arg) => isObject(arg) &&
 
 const svcList = ['svc1', 'svc2', 'svc3'];
 const Services = svcList.reduce((obj, svc) => {
-    obj[svc] = newService(svc);
+    obj[svc] = Service.gen(svc);
     return obj;
 }, {});
 const server = http.createServer(async (req, resp) => {

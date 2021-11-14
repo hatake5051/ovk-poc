@@ -19,6 +19,13 @@ import { RandUint8Array } from './random';
  */
 export { RandUint8Array };
 
+/**
+ * Hash 関数を用いた鍵導出関数を実装する。
+ * @param key マスター鍵
+ * @param salt ソルト。これは公開される。
+ * @param length 出力結果の長さ(オクテット長)
+ * @returns key を持つ人だけが導出できる鍵
+ */
 export const HKDF = async (
   key: Uint8Array,
   salt: Uint8Array,
@@ -33,12 +40,27 @@ export const HKDF = async (
   return new Uint8Array(derivedKeyMaterial);
 };
 
+/**
+ * SHA-256 ハッシュ関数を実装する。
+ * @param m メッセージ
+ * @returns メッセージの SHA-256 ハッシュ値
+ */
 export const SHA256 = async (m: Uint8Array): Promise<Uint8Array> => {
   const dgst = await RuntimeUtility.subtle.digest('SHA-256', m);
   return new Uint8Array(dgst);
 };
 
+/**
+ * HMAC を実装する。
+ * mac で MAC 値を生成し、 verify で MAC を検証する。
+ */
 export const HMAC = {
+  /**
+   * MAC を生成する
+   * @param key MAC 生成鍵(検証鍵でもある)
+   * @param m メッセージ
+   * @returns MAC 値
+   */
   async mac(key: Uint8Array, m: Uint8Array): Promise<Uint8Array> {
     const sk_api = await RuntimeUtility.subtle.importKey(
       'raw',
@@ -50,6 +72,13 @@ export const HMAC = {
     const mac = await RuntimeUtility.subtle.sign('HMAC', sk_api, m);
     return new Uint8Array(mac);
   },
+  /**
+   * MAC を検証する。
+   * @param key MAC 検証鍵(生成鍵でもある)
+   * @param m メッセージ
+   * @param mac MAC 値
+   * @returns 検証に成功すれば true
+   */
   async verify(key: Uint8Array, m: Uint8Array, mac: Uint8Array): Promise<boolean> {
     const sk_api = await RuntimeUtility.subtle.importKey(
       'raw',
@@ -62,12 +91,28 @@ export const HMAC = {
   },
 };
 
+/**
+ * ECDSA over P-256 を実装する。
+ * gen で EC 秘密鍵を生成もしくは、秘密鍵から公開鍵を導出する。
+ * sign で署名を行い、 verify で署名を検証する。
+ * dh で DH 計算を行う。
+ */
 export const ECP256 = {
+  /**
+   * 秘密鍵を生成する。
+   * @param secret 秘密鍵成分
+   * @returns 秘密鍵成分から導出した公開鍵を含む秘密鍵
+   */
   async gen(secret?: Uint8Array): Promise<JsonWebKey> {
     const d = secret ? BigInt('0x' + Uint8Array2HexStr(secret, secret.length)) : undefined;
     return KeyPair.gen(secp256r1, d).toJWK();
   },
-
+  /**
+   * 秘密鍵でメッセージの署名値を作成する。
+   * @param sk EC秘密鍵
+   * @param m メッセージ
+   * @returns 署名値
+   */
   async sign(sk: JsonWebKey, m: Uint8Array): Promise<Uint8Array> {
     const k_api = await RuntimeUtility.subtle.importKey(
       'jwk',
@@ -79,7 +124,13 @@ export const ECP256 = {
     const sig = await RuntimeUtility.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, k_api, m);
     return new Uint8Array(sig);
   },
-
+  /**
+   * 公開鍵で署名を検証する。
+   * @param pk EC公開鍵
+   * @param m メッセージ
+   * @param s 署名値
+   * @returns 署名が正しければ true
+   */
   async verify(pk: JsonWebKey, m: Uint8Array, s: Uint8Array): Promise<boolean> {
     const k = await RuntimeUtility.subtle.importKey(
       'jwk',
@@ -91,6 +142,12 @@ export const ECP256 = {
     return await RuntimeUtility.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, k, s, m);
   },
 
+  /**
+   * DH計算を行う。
+   * @param pk EC 公開鍵成分
+   * @param sk EC 秘密鍵成分
+   * @returns sk * pk した結果
+   */
   async dh(pk: { x: string; y: string }, sk: { d: string }): Promise<JsonWebKey> {
     const privKey = KeyPair.gen(
       secp256r1,
@@ -110,6 +167,12 @@ export const ECP256 = {
   },
 };
 
+/**
+ * PBES2 + A128GCM の JWE Compact Serialization 実装。
+ * パスワードから Key Encryption Key を導出し、 Content Encryption Key をラップする。
+ * CEK で平文を AES-GCM using 128 bit key 暗号化する。
+ * compact で暗号化し JWE で表現、 dec で JWE を復号する。
+ */
 export const PBES2JWE = {
   async compact(pw: string, m: Uint8Array): Promise<string> {
     // PBES2 用の JOSE Header を用意して

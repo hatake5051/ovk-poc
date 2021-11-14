@@ -7,7 +7,7 @@ export default {
   input: 'build/entrypoint/client.js',
   output: {
     file: 'publish/client.js',
-    format: 'cjs',
+    format: 'es',
   },
   plugins: [json(), commonjs(), resolve(), includePaths({ paths: ['./build'] })],
 };

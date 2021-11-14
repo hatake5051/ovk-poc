@@ -1,20 +1,36 @@
 import { BASE64URL, HexStr2Uint8Array, Uint8Array2HexStr } from 'utility';
 import { RandUint8Array } from './random';
 
+/**
+ * 楕円曲線の無限遠点を表現する。
+ */
 type InfinitePoint = 'O';
 const isInfinitePoint = (arg: unknown): arg is InfinitePoint => arg === 'O';
+/**
+ * 楕円曲線上の点を表現する。
+ */
 type FinitePoint = { x: bigint; y: bigint };
 
+/**
+ * EC では楕円曲線上のてんに無限遠点を加えたものを考える。
+ */
 type Point = FinitePoint | InfinitePoint;
 
 /**
- * SEC1#2.2.1 Elliptic Curves over F_p
- * bigint は暗号処理に向かないため、本番運用は避けるべきである。
+ * SEC1#2.2.1 Elliptic Curves over F_p を実装する。
+ * E(F_p): y^2 = x^3 + ax + b (mod p)なので、パラメータは a,b,p
+ * 実装に当たっては bigint を利用しているが、bigint は暗号処理に向かないため、本番運用は避けるべきである。
  * c.f.) https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/BigInt#cryptography
  */
 class PCurve {
   constructor(private a: bigint, private b: bigint, public p: bigint) {}
 
+  /**
+   * k * p を行う
+   * @param p 楕円曲線上の点
+   * @param k 整数 in [1,p-1]
+   * @returns p を k 回足した結果 k*p
+   */
   exp(p: Point, k: bigint): Point {
     const absk = k < 0n ? -k : k;
     const k_bin = absk.toString(2);
@@ -31,6 +47,11 @@ class PCurve {
     return ans;
   }
 
+  /**
+   * 点 P が楕円曲線のものか判定する。
+   * @param P 楕円曲線の点と思われるもの
+   * @returns 楕円曲線の点なら true
+   */
   isPoint(P: Point): boolean {
     if (isInfinitePoint(P)) {
       return true;
@@ -39,10 +60,27 @@ class PCurve {
     if (x < 0n || this.p <= x || y < 0n || this.p <= y) {
       return false;
     }
-    const left = mod(y * y, this.p);
-    const right = mod(mul(dbl(x, this.p), x, this.p) + mul(this.a, x, this.p) + this.b, this.p);
-
+    // y^2
+    const left = this.dbl(y);
+    // x^3 + ax + b
+    const right = this.mod(this.mul(this.dbl(x), x) + this.mul(this.a, x) + this.b);
     return left === right;
+  }
+
+  private mod(a: bigint): bigint {
+    return mod(a, this.p);
+  }
+
+  private mul(a: bigint, b: bigint): bigint {
+    return mul(a, b, this.p);
+  }
+
+  private dbl(a: bigint): bigint {
+    return dbl(a, this.p);
+  }
+
+  private inv(a: bigint): bigint {
+    return inv(a, this.p);
   }
 
   /**
@@ -63,7 +101,7 @@ class PCurve {
     }
     // x座標が同じで y座標が異なるか0の時は、無限遠点
     // すなわち (x,y) の逆元 - (x,y) === (x, -y)
-    if (mod(p1.y + p2.y, this.p) === 0n) {
+    if (this.mod(p1.y + p2.y) === 0n) {
       return 'O';
     }
     // x座標が異なる場合は
@@ -74,6 +112,11 @@ class PCurve {
     return this.doubleFinitePoint(p1);
   }
 
+  /**
+   * 2倍算を定義する。
+   * @param p 楕円曲線の点
+   * @returns p + p
+   */
   double(p: Point): Point {
     if (isInfinitePoint(p)) {
       return 'O';
@@ -86,30 +129,42 @@ class PCurve {
     if (p1.x === p2.x) {
       throw new EvalError(`addDiffPoints function は異なる２点の加算しか行えません`);
     }
-    const lambda = mul(p2.y - p1.y, inv(p2.x - p1.x, this.p), this.p);
-    const x3 = mod(dbl(lambda, this.p) - p1.x - p2.x, this.p);
-    const y3 = mod(mul(lambda, p1.x - x3, this.p) - p1.y, this.p);
+    const lambda = this.mul(p2.y - p1.y, this.inv(p2.x - p1.x));
+    const x3 = this.mod(this.dbl(lambda) - p1.x - p2.x);
+    const y3 = this.mod(this.mul(lambda, p1.x - x3) - p1.y);
     return { x: x3, y: y3 };
   }
 
   // 有限点の2倍を計算する。
   private doubleFinitePoint(p: FinitePoint): FinitePoint {
-    const lambda = mul(3n * dbl(p.x, this.p) + this.a, inv(2n * p.y, this.p), this.p);
-    const x3 = mod(dbl(lambda, this.p) - 2n * p.x, this.p);
-    const y3 = mod(mul(lambda, p.x - x3, this.p) - p.y, this.p);
+    const lambda = this.mul(3n * this.dbl(p.x) + this.a, this.inv(2n * p.y));
+    const x3 = this.mod(this.dbl(lambda) - 2n * p.x);
+    const y3 = this.mod(this.mul(lambda, p.x - x3) - p.y);
     return { x: x3, y: y3 };
   }
 }
+
+/**
+ * a (mod n)
+ */
 const mod = (a: bigint, n: bigint): bigint => {
   const ans = a % n;
   return ans < 0 ? ans + n : ans;
 };
+
+/**
+ * a * b (mod n)
+ */
 const mul = (a: bigint, b: bigint, n: bigint): bigint => mod(a * b, n);
+
+/**
+ * a^2 (mod n)
+ */
 const dbl = (a: bigint, n: bigint): bigint => mod(a * a, n);
 
-// 法 n のもと、元 a の逆元を返す関数。逆元がなければエラー。
-// inputs: a,n: 整数 (BigInt)
-// output: a^(-1) mod n があればそれを返す。
+/**
+ * a^(-1) (mod n) で逆元がなければエラー
+ */
 function inv(a: bigint, n: bigint): bigint {
   // 拡張ユークリッドの誤除法
   // inputs: a,b: 正整数 (BigInt)
@@ -133,8 +188,14 @@ function inv(a: bigint, n: bigint): bigint {
   return z.x % n;
 }
 
+/**
+ * KeyPair の公開鍵を表現する。
+ */
 export type KeyPairPublic = FinitePoint;
 
+/**
+ * 楕円曲線の鍵ペアを実装する。
+ */
 export class KeyPair {
   private constructor(private T: DomainParams, private d: bigint, private Q: FinitePoint) {}
 
@@ -146,9 +207,8 @@ export class KeyPair {
    */
   static gen(T: DomainParams, d?: bigint): KeyPair {
     if (!d) {
-      const len = T.n.toString(16).length;
-      const d_u8a = RandUint8Array(len / 2);
-      d = BigInt('0x' + Uint8Array2HexStr(d_u8a, len / 2));
+      const d_u8a = RandUint8Array(T.n.toString(16).length / 2);
+      d = BigInt('0x' + Uint8Array2HexStr(d_u8a));
     } else if (d < 0n || T.n <= d) {
       throw new TypeError(`秘密鍵のサイズが不適切`);
     }
@@ -182,12 +242,12 @@ export class KeyPair {
   }
 
   toJWK(isPublic = false) {
-    const x = BASE64URL(HexStr2Uint8Array(this.Q.x.toString(16), 32));
-    const y = BASE64URL(HexStr2Uint8Array(this.Q.y.toString(16), 32));
+    const x = BASE64URL(HexStr2Uint8Array(this.Q.x.toString(16), this.T.n.toString(16).length / 2));
+    const y = BASE64URL(HexStr2Uint8Array(this.Q.y.toString(16), this.T.n.toString(16).length / 2));
     if (isPublic) {
       return { kty: 'EC', crv: this.T.name.jwk, x, y };
     }
-    const d = BASE64URL(HexStr2Uint8Array(this.d.toString(16), 32));
+    const d = BASE64URL(HexStr2Uint8Array(this.d.toString(16), this.T.n.toString(16).length / 2));
     return { kty: 'EC', crv: this.T.name.jwk, x, y, d };
   }
 }
@@ -202,6 +262,9 @@ type DomainParams = {
   h: bigint;
 };
 
+/**
+ * secp256r1 のドメインパラメータ
+ */
 export const secp256r1: DomainParams = {
   name: { jwk: 'P-256' },
   crv: new PCurve(

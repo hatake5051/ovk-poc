@@ -1,5 +1,11 @@
+/**
+ * node では webcryoto がライブラリで提供されているのでそれを使う。
+ * BASE64 関連は Buffer で実装する。
+ */
+
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { subtle, getRandomValues } = require('crypto').webcrypto;
+
 /**
  * バイト列を BASE64URL エンコードする (Uint8Array to string)
  */

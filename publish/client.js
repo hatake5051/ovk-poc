@@ -1,5 +1,7 @@
-'use strict';
-
+/**
+ * browser では webcrypto は window に含まれているのでそれを使う。
+ * BASE64 関連は window.atob で実装する。
+ */
 /**
  * バイト列を BASE64URL エンコードする (Uint8Array to string)
  */
@@ -47,14 +49,18 @@ const RuntimeUtility = {
 };
 
 /**
- * 文字列を UTF8 バイトエンコードする。(string to Uint8Array)
+ * 文字列を UTF8 バイト列に変換する
+ * @param STRING 変換対象の文字列
+ * @returns STRING の UTF8 バイト列
  */
 function UTF8(STRING) {
     const encoder = new TextEncoder();
     return encoder.encode(STRING);
 }
 /**
- * 文字列に UTF8 バイトデコードする (Uint8Array to string)
+ * UTF8 バイト列を文字列に変換する
+ * @param OCTETS UTF8 バイト列
+ * @returns 文字列
  */
 function UTF8_DECODE(OCTETS) {
     const decoder = new TextDecoder();
@@ -70,10 +76,33 @@ function ASCII(STRING) {
     }
     return b;
 }
+/**
+ * 16進数の文字列を Uint8Array に変換する。
+ * len を与えない時は hexstr の長さにする。
+ * @param hexstr 16進数の文字列
+ * @param len 求めるバイナリ列の長さ。 hexstr の方が大きい時は TypeError を投げる。
+ * hexstr の方が短い時は先頭を 0 padding する。
+ * @returns hexstr を Uint8Array で表現したもの
+ */
 function HexStr2Uint8Array(hexstr, len) {
-    let ans_str = hexstr;
-    if (hexstr.length < len * 2) {
-        ans_str = '0'.repeat(len * 2 - hexstr.length) + hexstr;
+    // len があれば、hexstr で足りない分を先頭 0 padding する。
+    // len がないなら、 hexstr が奇数長の場合に先頭 0 padding する
+    let ans_str;
+    if (len) {
+        if (hexstr.length <= len * 2) {
+            ans_str = '0'.repeat(len * 2 - hexstr.length) + hexstr;
+        }
+        else {
+            throw new TypeError(`hexstr が len よりも長い`);
+        }
+    }
+    else {
+        if (hexstr.length % 2 === 1) {
+            ans_str = '0' + hexstr;
+        }
+        else {
+            ans_str = hexstr;
+        }
     }
     const ans_length = ans_str.length / 2;
     const ans = new Uint8Array(ans_length);
@@ -82,6 +111,13 @@ function HexStr2Uint8Array(hexstr, len) {
     }
     return ans;
 }
+/**
+ * Uint8Array を16進数文字列に変換する。
+ * @param arr バイナリ列
+ * @param len 16進数文字列にした時のバイナリ長(結果は len の2倍の文字列になる)。
+ * arr の方が長い時は TypeError をながる。 arr の方が短い時は先頭を 00-padding する。
+ * @returns arr を16進数表現した文字列
+ */
 function Uint8Array2HexStr(arr, len) {
     const str_arr = Array.from(arr).map(function (e) {
         let hexchar = e.toString(16);
@@ -90,11 +126,18 @@ function Uint8Array2HexStr(arr, len) {
         }
         return hexchar;
     });
-    let ans = str_arr.join('');
-    if (ans.length < len * 2) {
-        ans = '0'.repeat(len * 2 - ans.length) + ans;
+    const ans = str_arr.join('');
+    if (len) {
+        if (ans.length <= len * 2) {
+            return '0'.repeat(len * 2 - ans.length) + ans;
+        }
+        else {
+            throw new TypeError(`arr が len よりも長い`);
+        }
     }
-    return ans;
+    else {
+        return ans;
+    }
 }
 /**
  * ２つのバイト列を結合する
@@ -112,10 +155,12 @@ function CONCAT(A, B) {
 const isObject = (value) => typeof value === 'object' && value !== null;
 /**
  * バイト列を BASE64URL エンコードする (Uint8Array to string)
+ * browser なら window.btoa で実装し、 node なら Buffer で実装する。
  */
 const BASE64URL = RuntimeUtility.BASE64URL;
 /**
  * バイト列に BASE64URL デコードする (string to Uint8Array)
+ * browser なら window.atob で実装し、 node なら Buffer で実装する。
  */
 const BASE64URL_DECODE = RuntimeUtility.BASE64URL_DECODE;
 
@@ -130,8 +175,9 @@ function RandUint8Array(len) {
 
 const isInfinitePoint = (arg) => arg === 'O';
 /**
- * SEC1#2.2.1 Elliptic Curves over F_p
- * bigint は暗号処理に向かないため、本番運用は避けるべきである。
+ * SEC1#2.2.1 Elliptic Curves over F_p を実装する。
+ * E(F_p): y^2 = x^3 + ax + b (mod p)なので、パラメータは a,b,p
+ * 実装に当たっては bigint を利用しているが、bigint は暗号処理に向かないため、本番運用は避けるべきである。
  * c.f.) https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/BigInt#cryptography
  */
 class PCurve {
@@ -140,6 +186,12 @@ class PCurve {
         this.b = b;
         this.p = p;
     }
+    /**
+     * k * p を行う
+     * @param p 楕円曲線上の点
+     * @param k 整数 in [1,p-1]
+     * @returns p を k 回足した結果 k*p
+     */
     exp(p, k) {
         const absk = k < 0n ? -k : k;
         const k_bin = absk.toString(2);
@@ -155,6 +207,11 @@ class PCurve {
         }
         return ans;
     }
+    /**
+     * 点 P が楕円曲線のものか判定する。
+     * @param P 楕円曲線の点と思われるもの
+     * @returns 楕円曲線の点なら true
+     */
     isPoint(P) {
         if (isInfinitePoint(P)) {
             return true;
@@ -163,9 +220,23 @@ class PCurve {
         if (x < 0n || this.p <= x || y < 0n || this.p <= y) {
             return false;
         }
-        const left = mod(y * y, this.p);
-        const right = mod(mul(dbl(x, this.p), x, this.p) + mul(this.a, x, this.p) + this.b, this.p);
+        // y^2
+        const left = this.dbl(y);
+        // x^3 + ax + b
+        const right = this.mod(this.mul(this.dbl(x), x) + this.mul(this.a, x) + this.b);
         return left === right;
+    }
+    mod(a) {
+        return mod(a, this.p);
+    }
+    mul(a, b) {
+        return mul(a, b, this.p);
+    }
+    dbl(a) {
+        return dbl(a, this.p);
+    }
+    inv(a) {
+        return inv(a, this.p);
     }
     /**
      * 楕円曲線上の２点の加算を定義する
@@ -185,7 +256,7 @@ class PCurve {
         }
         // x座標が同じで y座標が異なるか0の時は、無限遠点
         // すなわち (x,y) の逆元 - (x,y) === (x, -y)
-        if (mod(p1.y + p2.y, this.p) === 0n) {
+        if (this.mod(p1.y + p2.y) === 0n) {
             return 'O';
         }
         // x座標が異なる場合は
@@ -195,6 +266,11 @@ class PCurve {
         // x座標が同じ場合(すなわち2倍)
         return this.doubleFinitePoint(p1);
     }
+    /**
+     * 2倍算を定義する。
+     * @param p 楕円曲線の点
+     * @returns p + p
+     */
     double(p) {
         if (isInfinitePoint(p)) {
             return 'O';
@@ -206,28 +282,37 @@ class PCurve {
         if (p1.x === p2.x) {
             throw new EvalError(`addDiffPoints function は異なる２点の加算しか行えません`);
         }
-        const lambda = mul(p2.y - p1.y, inv(p2.x - p1.x, this.p), this.p);
-        const x3 = mod(dbl(lambda, this.p) - p1.x - p2.x, this.p);
-        const y3 = mod(mul(lambda, p1.x - x3, this.p) - p1.y, this.p);
+        const lambda = this.mul(p2.y - p1.y, this.inv(p2.x - p1.x));
+        const x3 = this.mod(this.dbl(lambda) - p1.x - p2.x);
+        const y3 = this.mod(this.mul(lambda, p1.x - x3) - p1.y);
         return { x: x3, y: y3 };
     }
     // 有限点の2倍を計算する。
     doubleFinitePoint(p) {
-        const lambda = mul(3n * dbl(p.x, this.p) + this.a, inv(2n * p.y, this.p), this.p);
-        const x3 = mod(dbl(lambda, this.p) - 2n * p.x, this.p);
-        const y3 = mod(mul(lambda, p.x - x3, this.p) - p.y, this.p);
+        const lambda = this.mul(3n * this.dbl(p.x) + this.a, this.inv(2n * p.y));
+        const x3 = this.mod(this.dbl(lambda) - 2n * p.x);
+        const y3 = this.mod(this.mul(lambda, p.x - x3) - p.y);
         return { x: x3, y: y3 };
     }
 }
+/**
+ * a (mod n)
+ */
 const mod = (a, n) => {
     const ans = a % n;
     return ans < 0 ? ans + n : ans;
 };
+/**
+ * a * b (mod n)
+ */
 const mul = (a, b, n) => mod(a * b, n);
+/**
+ * a^2 (mod n)
+ */
 const dbl = (a, n) => mod(a * a, n);
-// 法 n のもと、元 a の逆元を返す関数。逆元がなければエラー。
-// inputs: a,n: 整数 (BigInt)
-// output: a^(-1) mod n があればそれを返す。
+/**
+ * a^(-1) (mod n) で逆元がなければエラー
+ */
 function inv(a, n) {
     // 拡張ユークリッドの誤除法
     // inputs: a,b: 正整数 (BigInt)
@@ -251,6 +336,9 @@ function inv(a, n) {
     }
     return z.x % n;
 }
+/**
+ * 楕円曲線の鍵ペアを実装する。
+ */
 class KeyPair {
     constructor(T, d, Q) {
         this.T = T;
@@ -265,9 +353,8 @@ class KeyPair {
      */
     static gen(T, d) {
         if (!d) {
-            const len = T.n.toString(16).length;
-            const d_u8a = RandUint8Array(len / 2);
-            d = BigInt('0x' + Uint8Array2HexStr(d_u8a, len / 2));
+            const d_u8a = RandUint8Array(T.n.toString(16).length / 2);
+            d = BigInt('0x' + Uint8Array2HexStr(d_u8a));
         }
         else if (d < 0n || T.n <= d) {
             throw new TypeError(`秘密鍵のサイズが不適切`);
@@ -298,15 +385,18 @@ class KeyPair {
         return true;
     }
     toJWK(isPublic = false) {
-        const x = BASE64URL(HexStr2Uint8Array(this.Q.x.toString(16), 32));
-        const y = BASE64URL(HexStr2Uint8Array(this.Q.y.toString(16), 32));
+        const x = BASE64URL(HexStr2Uint8Array(this.Q.x.toString(16), this.T.n.toString(16).length / 2));
+        const y = BASE64URL(HexStr2Uint8Array(this.Q.y.toString(16), this.T.n.toString(16).length / 2));
         if (isPublic) {
             return { kty: 'EC', crv: this.T.name.jwk, x, y };
         }
-        const d = BASE64URL(HexStr2Uint8Array(this.d.toString(16), 32));
+        const d = BASE64URL(HexStr2Uint8Array(this.d.toString(16), this.T.n.toString(16).length / 2));
         return { kty: 'EC', crv: this.T.name.jwk, x, y, d };
     }
 }
+/**
+ * secp256r1 のドメインパラメータ
+ */
 const secp256r1 = {
     name: { jwk: 'P-256' },
     crv: new PCurve(BigInt('0xffffffff00000001000000000000000000000000fffffffffffffffffffffffc'), BigInt('0x5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b'), BigInt('0xffffffff00000001000000000000000000000000ffffffffffffffffffffffff')),
@@ -318,40 +408,99 @@ const secp256r1 = {
     h: 1n,
 };
 
+/**
+ * Hash 関数を用いた鍵導出関数を実装する。
+ * @param key マスター鍵
+ * @param salt ソルト。これは公開される。
+ * @param length 出力結果の長さ(オクテット長)
+ * @returns key を持つ人だけが導出できる鍵
+ */
 const HKDF = async (key, salt, length) => {
     const k = await RuntimeUtility.subtle.importKey('raw', key, 'HKDF', false, ['deriveBits']);
     const derivedKeyMaterial = await RuntimeUtility.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt, info: new Uint8Array() }, k, length);
     return new Uint8Array(derivedKeyMaterial);
 };
+/**
+ * SHA-256 ハッシュ関数を実装する。
+ * @param m メッセージ
+ * @returns メッセージの SHA-256 ハッシュ値
+ */
 const SHA256 = async (m) => {
     const dgst = await RuntimeUtility.subtle.digest('SHA-256', m);
     return new Uint8Array(dgst);
 };
+/**
+ * HMAC を実装する。
+ * mac で MAC 値を生成し、 verify で MAC を検証する。
+ */
 const HMAC = {
+    /**
+     * MAC を生成する
+     * @param key MAC 生成鍵(検証鍵でもある)
+     * @param m メッセージ
+     * @returns MAC 値
+     */
     async mac(key, m) {
         const sk_api = await RuntimeUtility.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
         const mac = await RuntimeUtility.subtle.sign('HMAC', sk_api, m);
         return new Uint8Array(mac);
     },
+    /**
+     * MAC を検証する。
+     * @param key MAC 検証鍵(生成鍵でもある)
+     * @param m メッセージ
+     * @param mac MAC 値
+     * @returns 検証に成功すれば true
+     */
     async verify(key, m, mac) {
         const sk_api = await RuntimeUtility.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
         return await RuntimeUtility.subtle.verify('HMAC', sk_api, mac, m);
     },
 };
+/**
+ * ECDSA over P-256 を実装する。
+ * gen で EC 秘密鍵を生成もしくは、秘密鍵から公開鍵を導出する。
+ * sign で署名を行い、 verify で署名を検証する。
+ * dh で DH 計算を行う。
+ */
 const ECP256 = {
+    /**
+     * 秘密鍵を生成する。
+     * @param secret 秘密鍵成分
+     * @returns 秘密鍵成分から導出した公開鍵を含む秘密鍵
+     */
     async gen(secret) {
         const d = secret ? BigInt('0x' + Uint8Array2HexStr(secret, secret.length)) : undefined;
         return KeyPair.gen(secp256r1, d).toJWK();
     },
+    /**
+     * 秘密鍵でメッセージの署名値を作成する。
+     * @param sk EC秘密鍵
+     * @param m メッセージ
+     * @returns 署名値
+     */
     async sign(sk, m) {
         const k_api = await RuntimeUtility.subtle.importKey('jwk', sk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
         const sig = await RuntimeUtility.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, k_api, m);
         return new Uint8Array(sig);
     },
+    /**
+     * 公開鍵で署名を検証する。
+     * @param pk EC公開鍵
+     * @param m メッセージ
+     * @param s 署名値
+     * @returns 署名が正しければ true
+     */
     async verify(pk, m, s) {
         const k = await RuntimeUtility.subtle.importKey('jwk', pk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
         return await RuntimeUtility.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, k, s, m);
     },
+    /**
+     * DH計算を行う。
+     * @param pk EC 公開鍵成分
+     * @param sk EC 秘密鍵成分
+     * @returns sk * pk した結果
+     */
     async dh(pk, sk) {
         const privKey = KeyPair.gen(secp256r1, BigInt('0x' + Uint8Array2HexStr(BASE64URL_DECODE(sk.d), 32)));
         const pubKey = {
@@ -367,6 +516,12 @@ const ECP256 = {
         };
     },
 };
+/**
+ * PBES2 + A128GCM の JWE Compact Serialization 実装。
+ * パスワードから Key Encryption Key を導出し、 Content Encryption Key をラップする。
+ * CEK で平文を AES-GCM using 128 bit key 暗号化する。
+ * compact で暗号化し JWE で表現、 dec で JWE を復号する。
+ */
 const PBES2JWE = {
     async compact(pw, m) {
         // PBES2 用の JOSE Header を用意して
@@ -468,11 +623,14 @@ class ECPubKey {
                 return this._y;
         }
     }
+    /**
+     * JWK 形式の EC 公開鍵から ECPubKey を生成する.
+     * kid が JWK 似なければ JWK Thumbprint に従って kid も生成する。
+     * @param jwk JWK 形式の公開鍵
+     * @returns
+     */
     static async fromJWK(jwk) {
         return new ECPubKey(BASE64URL_DECODE(jwk.x), BASE64URL_DECODE(jwk.y), jwk.kid ?? (await genKID(jwk)));
-    }
-    static is(arg) {
-        return arg instanceof ECPubKey;
     }
     /**
      * この公開鍵を JWK で表現する。
@@ -523,6 +681,7 @@ class ECPrivKey extends ECPubKey {
     }
     /**
      * JWK からECPrivKey を作成するコンストラクタ
+     * kid が JWK になければ JWK Thumbprint に基づいて自動生成する。
      * @param jwk EC 秘密鍵の JWK 成分
      * @returns Promise<ECPrivKey>
      */
@@ -536,9 +695,15 @@ class ECPrivKey extends ECPubKey {
     static async gen() {
         return ECPrivKey.fromJWK((await ECP256.gen()));
     }
+    /**
+     * ECPubKey になる
+     */
     toECPubKey() {
-        return this;
+        return new ECPubKey(this._x, this._y, this._kid);
     }
+    /**
+     * JWK で表現する。
+     */
     toJWK() {
         return {
             ...super.toJWK(),
@@ -578,23 +743,70 @@ async function genKID(jwk) {
     return BASE64URL(dgst);
 }
 
+/**
+ * シードを管理できて、鍵管理を行える認証器
+ */
 class Device {
-    constructor(name, seed, attsKey, creds = [], negotiating) {
+    constructor(
+    /**
+     * デバイス名
+     */
+    name, 
+    /**
+     * Seed 機能
+     */
+    seed, 
+    /**
+     * このデバイスのアテステーションキー
+     */
+    attsKey, 
+    /**
+     * このデバイスのクレデンシャル
+     */
+    creds = [], 
+    /**
+     * シードネゴシエーション中の情報
+     */
+    negotiating) {
         this.name = name;
         this.seed = seed;
         this.attsKey = attsKey;
         this.creds = creds;
         this.negotiating = negotiating;
     }
+    /**
+     * デバイスを作成する
+     * @param name デバイス名
+     * @param seed シード管理機能
+     */
     static async gen(name, seed) {
         return new Device(name, seed, await ECPrivKey.gen());
     }
+    /**
+     * シードネゴシエーションを開始する。
+     * @param pw シード共有時のパスワード
+     * @param devID 自身のデバイス識別子
+     * @param partnerID 共有時の情報を受け取る相手のデバイス識別子
+     * @param devNum 共有に参加するデバイスの総数
+     * @param updating シードの更新を行おうとしているかどうか
+     * @returns シードネゴシエーションするための情報
+     */
     async initSeedNegotiation(pw, devID, partnerID, devNum, updating = false) {
+        // ネゴシエーション中の情報を一時的に保存して
         this.negotiating = { pw, devID, devNum, partnerID, epk: { mine: {}, partner: {} } };
+        // ネゴシエーション１回め
         const { epk } = await this.seed.negotiate({ id: devID, partnerID, devNum }, undefined, updating);
+        // ネゴシエーション用の情報を作成したデバイスを識別するための情報に載せて
         const m = UTF8(this.negotiating.devID + '.' + JSON.stringify(epk));
+        // パスワードで暗号化
         return PBES2JWE.compact(this.negotiating.pw, m);
     }
+    /**
+     * 他のデバイスから情報をもらってシードネゴシエートする。
+     * @param ciphertext 他のデバイスから届いたネゴシエーション中の情報
+     * @param updating シードの更新を行なっている最中かどうか
+     * @returns 計算結果
+     */
     async seedNegotiating(ciphertext, updating = false) {
         if (!this.negotiating) {
             throw new EvalError(`シードのネゴシエーション初期化を行っていない`);
@@ -627,16 +839,22 @@ class Device {
         }
         return { completion, ciphertext: ciphertext_ans };
     }
+    /**
+     * サービスに登録する。
+     * @param svc 登録先のサービス識別子 とチャレンジ
+     * @param ovkm 登録先のサービスから Ownership verification key material があれば
+     * @returns 登録するための情報
+     */
     async register(svc, ovkm) {
-        // クレデンシャルの生成とアテステーション
+        // クレデンシャルの生成とアテステーションを行う
         const cred_sk = await ECPrivKey.gen();
-        const cred_pk_jwk = await (await cred_sk.toECPubKey()).toJWK();
+        const cred_pk_jwk = cred_sk.toECPubKey().toJWK();
         const sig_atts = await this.attsKey.sign(CONCAT(BASE64URL_DECODE(svc.challenge_b64u), UTF8(JSON.stringify(cred_pk_jwk))));
-        this.creds.push(await cred_sk.toJWK());
+        this.creds.push(cred_sk.toJWK());
         // 登録するクレデンシャルとアテステーションのセット
         const cred = {
             jwk: cred_pk_jwk,
-            atts: { sig_b64u: BASE64URL(sig_atts), key: await (await this.attsKey.toECPubKey()).toJWK() },
+            atts: { sig_b64u: BASE64URL(sig_atts), key: this.attsKey.toECPubKey().toJWK() },
         };
         if (ovkm) {
             // 他のデバイスで OVK 登録済みなので、シームレスな登録を行う
@@ -655,10 +873,16 @@ class Device {
             const mac = await this.seed.macOVK(r, svc.id);
             return {
                 cred,
-                ovkm: { ovk_jwk: await ovk.toJWK(), r_b64u: BASE64URL(r), mac_b64u: BASE64URL(mac) },
+                ovkm: { ovk_jwk: ovk.toJWK(), r_b64u: BASE64URL(r), mac_b64u: BASE64URL(mac) },
             };
         }
     }
+    /**
+     *
+     * @param svc サービス識別子とチャレンジと登録済みクレデンシャル
+     * @param ovkm Ownership Verification Key Material があれば
+     * @returns 認証するための情報
+     */
     async authn(svc, ovkm) {
         // 登録済みのクレデンシャルから対応する秘密鍵を識別する
         const cred_sk = this.creds.find((sk) => svc.creds.some((pk) => equalECPubJWK(pk, sk)));
@@ -667,25 +891,31 @@ class Device {
         }
         // challenge に署名する
         const sk = await ECPrivKey.fromJWK(cred_sk);
-        const cred_jwk = await (await sk.toECPubKey()).toJWK();
+        const cred_jwk = sk.toECPubKey().toJWK();
         const sig = await sk.sign(BASE64URL_DECODE(svc.challenge_b64u));
         const sig_b64u = BASE64URL(sig);
         // シードの更新が行われ、 OVK を更新する必要があるか確認する
-        if (!(await this.seed.isUpdating())) {
+        // updating 中でないなら、もしくは updating 中だが OVK の更新が終了していれば update メッセージを送らない
+        if (!(await this.seed.isUpdating()) ||
+            (await this.seed.verifyOVK(BASE64URL_DECODE(ovkm.r_b64u), svc.id, BASE64URL_DECODE(ovkm.mac_b64u)))) {
             // updating する必要はないので送信
             return { cred_jwk, sig_b64u };
         }
+        // シードの更新が行われているので、 OVK を更新する
         // このデバイスにあるシードから導出できる OVK を探す
         const ovkm_correct = await (async (nexts) => {
             if (!nexts) {
+                // どのでばいすも update メッセージを送っていない
                 return undefined;
             }
             for (const ovkm_i of nexts) {
+                // OVK の検証に成功すれば、それが同じシードを持つ別のデバイスで生成された OVK
                 const isVerified = await this.seed.verifyOVK(BASE64URL_DECODE(ovkm_i.r_b64u), svc.id, BASE64URL_DECODE(ovkm_i.mac_b64u));
                 if (isVerified) {
                     return ovkm_i;
                 }
             }
+            // update メッセージは登録されているが、同じシードを持つデバイスからのものではない
             return undefined;
         })(ovkm.next);
         if (ovkm_correct) {
@@ -712,7 +942,7 @@ class Device {
                 sig_b64u,
                 updating: {
                     update_b64u: BASE64URL(update),
-                    ovkm: { ovk_jwk: await ovk.toJWK(), r_b64u: BASE64URL(r), mac_b64u: BASE64URL(mac) },
+                    ovkm: { ovk_jwk: ovk.toJWK(), r_b64u: BASE64URL(r), mac_b64u: BASE64URL(mac) },
                 },
             };
         }
@@ -839,6 +1069,13 @@ class SeedImpl {
         const prevSK = await this.OVK(prevR, s);
         const sig = await prevSK.sign(UTF8(JSON.stringify(nextOVK.toJWK())));
         return new Uint8Array(sig);
+    }
+    async completeUpdation() {
+        if (!(await this.isUpdating())) {
+            throw new EvalError(`Migrating 中ではない`);
+        }
+        this.seeds.shift();
+        return;
     }
 }
 
@@ -1050,11 +1287,20 @@ window.document.getElementById('svc-access')?.addEventListener('submit', async f
             log(`${svcIDE.value} へのアカウント新規登録要求でstatus(${accessResp.status})のエラー`);
             return;
         }
+        const regRespMessage = await regResp.json();
+        if (typeof regRespMessage !== 'boolean') {
+            log(`${svcIDE.value} へのアカウント新規登録要求で不正なレスポンスボディエラー`);
+            return;
+        }
+        if (!regRespMessage) {
+            log(`ユーザ(${nameE.value}) はサービス(${svcIDE.value})へのアカウント登録に失敗`);
+            return;
+        }
         registeredUsers[svcIDE.value]?.push(nameE.value) ??
             (registeredUsers[svcIDE.value] = [nameE.value]);
         log(`ユーザ(${nameE.value}) はサービス(${svcIDE.value})にアカウント登録完了!`);
         return;
-    }
+    } // ログインを行う場合
     else if (e.submitter.name === 'login') {
         if (!('creds' in accessRespMessage)) {
             log(`ユーザ(${nameE.value}) はサービス(${svcIDE.value}) に対して登録済みではない`);
@@ -1066,7 +1312,14 @@ window.document.getElementById('svc-access')?.addEventListener('submit', async f
         }
         catch {
             // 登録済みクレデンシャルが見つからんのでシームレスな登録を試みる
-            const r = await Dev.register({ id: svcIDE.value, ...accessRespMessage }, accessRespMessage.ovkm);
+            let r;
+            try {
+                r = await Dev.register({ id: svcIDE.value, ...accessRespMessage }, accessRespMessage.ovkm);
+            }
+            catch {
+                log(`ユーザ(${nameE.value}) はサービス(${svcIDE.value}) に対して登録済みだが OVK が一致しない`);
+                return;
+            }
             const regReqMessage = {
                 username: nameE.value,
                 ...r,
@@ -1078,6 +1331,15 @@ window.document.getElementById('svc-access')?.addEventListener('submit', async f
             });
             if (regResp.status !== 200) {
                 log(`${svcIDE.value} へのクレデンシャル追加登録要求でstatus(${accessResp.status})のエラー`);
+                return;
+            }
+            const regRespMessage = await regResp.json();
+            if (typeof regRespMessage !== 'boolean') {
+                log(`${svcIDE.value} へのアカウント新規登録要求で不正なレスポンスボディエラー`);
+                return;
+            }
+            if (!regRespMessage) {
+                log(`ユーザ(${nameE.value}) はサービス(${svcIDE.value})にこのデバイスのクレデンシャルを追加登録に失敗`);
                 return;
             }
             log(`ユーザ(${nameE.value}) はサービス(${svcIDE.value})にこのデバイスのクレデンシャルを追加登録完了!`);
@@ -1094,6 +1356,15 @@ window.document.getElementById('svc-access')?.addEventListener('submit', async f
         });
         if (authnResp.status !== 200) {
             log(`${svcIDE.value} へのログイン要求でstatus(${accessResp.status})のエラー`);
+            return;
+        }
+        const authnRespMessage = await authnResp.json();
+        if (typeof authnRespMessage !== 'boolean') {
+            log(`${svcIDE.value} へのログイン要求で不正なレスポンスボディエラー`);
+            return;
+        }
+        if (!authnRespMessage) {
+            log(`ユーザ(${nameE.value}) はサービス(${svcIDE.value})にこのデバイスでログイン失敗`);
             return;
         }
         log(`ユーザ(${nameE.value}) はサービス(${svcIDE.value})にこのデバイスでログイン成功！`);

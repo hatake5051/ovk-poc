@@ -3,12 +3,30 @@ import { Seed } from 'seed';
 import { BASE64URL, BASE64URL_DECODE, CONCAT, UTF8, UTF8_DECODE } from 'utility';
 import { PBES2JWE, RandUint8Array } from 'utility/crypto';
 
+/**
+ * シードを管理できて、鍵管理を行える認証器
+ */
 export class Device {
   private constructor(
+    /**
+     * デバイス名
+     */
     private name: string,
+    /**
+     * Seed 機能
+     */
     private seed: Seed,
+    /**
+     * このデバイスのアテステーションキー
+     */
     private attsKey: ECPrivKey,
+    /**
+     * このデバイスのクレデンシャル
+     */
     private creds: ECPirvJWK[] = [],
+    /**
+     * シードネゴシエーション中の情報
+     */
     private negotiating?: {
       pw: string;
       devID: string;
@@ -21,10 +39,24 @@ export class Device {
     }
   ) {}
 
+  /**
+   * デバイスを作成する
+   * @param name デバイス名
+   * @param seed シード管理機能
+   */
   static async gen(name: string, seed: Seed): Promise<Device> {
     return new Device(name, seed, await ECPrivKey.gen());
   }
 
+  /**
+   * シードネゴシエーションを開始する。
+   * @param pw シード共有時のパスワード
+   * @param devID 自身のデバイス識別子
+   * @param partnerID 共有時の情報を受け取る相手のデバイス識別子
+   * @param devNum 共有に参加するデバイスの総数
+   * @param updating シードの更新を行おうとしているかどうか
+   * @returns シードネゴシエーションするための情報
+   */
   async initSeedNegotiation(
     pw: string,
     devID: string,
@@ -32,16 +64,26 @@ export class Device {
     devNum: number,
     updating = false
   ): Promise<string> {
+    // ネゴシエーション中の情報を一時的に保存して
     this.negotiating = { pw, devID, devNum, partnerID, epk: { mine: {}, partner: {} } };
+    // ネゴシエーション１回め
     const { epk } = await this.seed.negotiate(
       { id: devID, partnerID, devNum },
       undefined,
       updating
     );
+    // ネゴシエーション用の情報を作成したデバイスを識別するための情報に載せて
     const m = UTF8(this.negotiating.devID + '.' + JSON.stringify(epk));
+    // パスワードで暗号化
     return PBES2JWE.compact(this.negotiating.pw, m);
   }
 
+  /**
+   * 他のデバイスから情報をもらってシードネゴシエートする。
+   * @param ciphertext 他のデバイスから届いたネゴシエーション中の情報
+   * @param updating シードの更新を行なっている最中かどうか
+   * @returns 計算結果
+   */
   async seedNegotiating(
     ciphertext: string,
     updating = false
@@ -86,6 +128,12 @@ export class Device {
     return { completion, ciphertext: ciphertext_ans };
   }
 
+  /**
+   * サービスに登録する。
+   * @param svc 登録先のサービス識別子 とチャレンジ
+   * @param ovkm 登録先のサービスから Ownership verification key material があれば
+   * @returns 登録するための情報
+   */
   async register(
     svc: { id: string; challenge_b64u: string },
     ovkm?: { r_b64u: string; mac_b64u: string }
@@ -96,17 +144,17 @@ export class Device {
     };
     ovkm: { ovk_jwk: ECPubJWK; r_b64u: string; mac_b64u: string } | { sig_b64u: string };
   }> {
-    // クレデンシャルの生成とアテステーション
+    // クレデンシャルの生成とアテステーションを行う
     const cred_sk = await ECPrivKey.gen();
-    const cred_pk_jwk = await (await cred_sk.toECPubKey()).toJWK();
+    const cred_pk_jwk = cred_sk.toECPubKey().toJWK();
     const sig_atts = await this.attsKey.sign(
       CONCAT(BASE64URL_DECODE(svc.challenge_b64u), UTF8(JSON.stringify(cred_pk_jwk)))
     );
-    this.creds.push(await cred_sk.toJWK());
+    this.creds.push(cred_sk.toJWK());
     // 登録するクレデンシャルとアテステーションのセット
     const cred = {
       jwk: cred_pk_jwk,
-      atts: { sig_b64u: BASE64URL(sig_atts), key: await (await this.attsKey.toECPubKey()).toJWK() },
+      atts: { sig_b64u: BASE64URL(sig_atts), key: this.attsKey.toECPubKey().toJWK() },
     };
     if (ovkm) {
       // 他のデバイスで OVK 登録済みなので、シームレスな登録を行う
@@ -124,11 +172,17 @@ export class Device {
       const mac = await this.seed.macOVK(r, svc.id);
       return {
         cred,
-        ovkm: { ovk_jwk: await ovk.toJWK(), r_b64u: BASE64URL(r), mac_b64u: BASE64URL(mac) },
+        ovkm: { ovk_jwk: ovk.toJWK(), r_b64u: BASE64URL(r), mac_b64u: BASE64URL(mac) },
       };
     }
   }
 
+  /**
+   *
+   * @param svc サービス識別子とチャレンジと登録済みクレデンシャル
+   * @param ovkm Ownership Verification Key Material があれば
+   * @returns 認証するための情報
+   */
   async authn(
     svc: { id: string; challenge_b64u: string; creds: ECPubJWK[] },
     ovkm: {
@@ -155,20 +209,32 @@ export class Device {
     }
     // challenge に署名する
     const sk = await ECPrivKey.fromJWK(cred_sk);
-    const cred_jwk = await (await sk.toECPubKey()).toJWK();
+    const cred_jwk = sk.toECPubKey().toJWK();
     const sig = await sk.sign(BASE64URL_DECODE(svc.challenge_b64u));
     const sig_b64u = BASE64URL(sig);
     // シードの更新が行われ、 OVK を更新する必要があるか確認する
-    if (!(await this.seed.isUpdating())) {
+    // updating 中でないなら、もしくは updating 中だが OVK の更新が終了していれば update メッセージを送らない
+    if (
+      !(await this.seed.isUpdating()) ||
+      (await this.seed.verifyOVK(
+        BASE64URL_DECODE(ovkm.r_b64u),
+        svc.id,
+        BASE64URL_DECODE(ovkm.mac_b64u)
+      ))
+    ) {
       // updating する必要はないので送信
       return { cred_jwk, sig_b64u };
     }
+
+    // シードの更新が行われているので、 OVK を更新する
     // このデバイスにあるシードから導出できる OVK を探す
     const ovkm_correct = await (async (nexts) => {
       if (!nexts) {
+        // どのでばいすも update メッセージを送っていない
         return undefined;
       }
       for (const ovkm_i of nexts) {
+        // OVK の検証に成功すれば、それが同じシードを持つ別のデバイスで生成された OVK
         const isVerified = await this.seed.verifyOVK(
           BASE64URL_DECODE(ovkm_i.r_b64u),
           svc.id,
@@ -178,8 +244,10 @@ export class Device {
           return ovkm_i;
         }
       }
+      // update メッセージは登録されているが、同じシードを持つデバイスからのものではない
       return undefined;
     })(ovkm.next);
+
     if (ovkm_correct) {
       // すでに登録済みの nextOVK に対応する Update メッセージを送る
       const update = await this.seed.update(
@@ -206,7 +274,7 @@ export class Device {
         sig_b64u,
         updating: {
           update_b64u: BASE64URL(update),
-          ovkm: { ovk_jwk: await ovk.toJWK(), r_b64u: BASE64URL(r), mac_b64u: BASE64URL(mac) },
+          ovkm: { ovk_jwk: ovk.toJWK(), r_b64u: BASE64URL(r), mac_b64u: BASE64URL(mac) },
         },
       };
     }

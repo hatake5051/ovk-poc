@@ -1,4 +1,9 @@
 /**
+ * browser では webcrypto は window に含まれているのでそれを使う。
+ * BASE64 関連は window.atob で実装する。
+ */
+
+/**
  * バイト列を BASE64URL エンコードする (Uint8Array to string)
  */
 function BASE64URL(OCTETS: Uint8Array): string {

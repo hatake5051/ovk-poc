@@ -1,6 +1,6 @@
 import { readFile } from 'fs';
 import { createServer } from 'http';
-import { newService, Service } from 'service';
+import { Service } from 'service';
 import {
   isAuthnRequestMessage,
   isRegistrationRequestMessage,
@@ -9,7 +9,7 @@ import {
 
 const svcList = ['svc1', 'svc2', 'svc3'] as const;
 const Services: Record<typeof svcList[number], Service> = svcList.reduce((obj, svc) => {
-  obj[svc] = newService(svc);
+  obj[svc] = Service.gen(svc);
   return obj;
 }, {} as Record<string, Service>);
 

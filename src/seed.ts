@@ -2,6 +2,12 @@ import { ECPirvJWK, ECPrivKey, ECPubJWK, ECPubKey } from 'key';
 import { BASE64URL_DECODE, CONCAT, UTF8 } from 'utility';
 import { HKDF, HMAC } from 'utility/crypto';
 
+/**
+ * Seed はシードを管理する機能を提供する。
+ * シードから Ownership Verification Key を導出する SeedDeriver と、
+ * シードを他のデバイスと共有する SeedNegotiator と、
+ * シードを更新する SeedUpdater からなる。
+ */
 export type Seed = SeedDeriver & SeedNegotiator & SeedUpdater;
 
 export function newSeed(): Seed {
@@ -14,6 +20,7 @@ export function newSeed(): Seed {
 interface SeedDeriver {
   /**
    * 乱数とシードから Ownership Verification Key を導出する。
+   * HKDF(key: seed, salt: r) で秘密鍵成分を導出し、これから公開鍵を計算する。
    * @param r 乱数
    * @returns Ownership Verification Public Key
    */
@@ -44,6 +51,25 @@ interface SeedDeriver {
 
 /**
  * SeedNegotiator はシードを他のデバイスとネゴシエートして同一シードを共有する機能
+ * ２つのデバイスA,B でやりとりする場合は、以下のように行われる。
+ * 妥当性は sa * epk_b[0] = sa * pb = sb * pa = sb * epk_a[0] だから。
+ * 1. A が (sa, pa) の鍵ペアを生成し epk_a = {0: pa} を公開する。
+ * 1. B が (sb, pb) の鍵ペアを生成し epk_b = {0: pb} を公開する。
+ * 1. A が epk_b を受け取って sa * epk_b[0] を計算し、この x 座標をシードにする。
+ * 2. B が epk_a を受け取って sb * epk_a[0] を計算し、この x 座標をシードにする。
+ *
+ *
+ * ３つのデバイス A,B,C でやりとりする場合は、以下のように行われる。
+ * 妥当性は以下の３つが同じだから。
+ * - sa * epk_c[1] = sa * (sc * epk_b[0]) = sa * (sc * pb)
+ * - sb * epk_a[1] = sb * (sa * epk_c[0]) = sb * (sa * pc)
+ * - sc * epk_b[1] = sc * (sb * spk_a[1]) = sc * (sb * pa)
+ *
+ * 1. A,B,C が (sx, px) の鍵ペアを生成し epk_x = {0: px} を公開する。
+ * 1. A は C から epk_c を受け取って epk_a = {0: pa, 1: sa * epk_c[0]} を公開する。
+ * 1. B は A から epk_a を受け取って epk_b = {0: pb, 1: sb * epk_a[0]} を公開し、 sb * epk_a[1] の x 座標をシードにする。
+ * 1. C は B から epk_b を受け取って epk_c = {0: pc, 1: sc * epk_b[0]} を公開し、 sc * epk_b[1] の x 座標をシードにする。
+ * 1. A は C から epk_c を受け取って sa * epk_c[1] の x 座標をシードにする。
  */
 interface SeedNegotiator {
   /**
@@ -68,9 +94,24 @@ interface SeedNegotiator {
   }>;
 }
 
+/**
+ * SeedUpdater はシードの更新を行う機能を持つ。更新する際の共有は SeedNegotiator で行う。
+ */
 interface SeedUpdater {
+  /**
+   * isUpdating はシードの更新を行なっていれば true を返す。
+   */
   isUpdating(): Promise<boolean>;
+  /**
+   * previous OVK で next OVK の検証鍵に署名した結果を返す。
+   * @param prevR 以前登録していた OVK を導出するための乱数 R
+   * @param nextOVK シードを更新して新しく使う OVK
+   */
   update(prevR: Uint8Array, nextOVK: ECPubKey): Promise<Uint8Array>;
+  /**
+   * update が完了したことを Seed に伝え、previous シードを破棄する。
+   */
+  completeUpdation(): Promise<void>;
 }
 
 class SeedImpl implements SeedDeriver, SeedNegotiator, SeedUpdater {
@@ -215,5 +256,13 @@ class SeedImpl implements SeedDeriver, SeedNegotiator, SeedUpdater {
     const prevSK = await this.OVK(prevR, s);
     const sig = await prevSK.sign(UTF8(JSON.stringify(nextOVK.toJWK())));
     return new Uint8Array(sig);
+  }
+
+  async completeUpdation(): Promise<void> {
+    if (!(await this.isUpdating())) {
+      throw new EvalError(`Migrating 中ではない`);
+    }
+    this.seeds.shift();
+    return;
   }
 }

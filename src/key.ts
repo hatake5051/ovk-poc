@@ -77,6 +77,12 @@ export class ECPubKey {
     }
   }
 
+  /**
+   * JWK 形式の EC 公開鍵から ECPubKey を生成する.
+   * kid が JWK 似なければ JWK Thumbprint に従って kid も生成する。
+   * @param jwk JWK 形式の公開鍵
+   * @returns
+   */
   static async fromJWK(jwk: ECPubJWK): Promise<ECPubKey> {
     return new ECPubKey(
       BASE64URL_DECODE(jwk.x),
@@ -85,9 +91,6 @@ export class ECPubKey {
     );
   }
 
-  static is(arg: unknown): arg is ECPubKey {
-    return arg instanceof ECPubKey;
-  }
   /**
    * この公開鍵を JWK で表現する。
    * @returns EC公開鍵の JWK 表現
@@ -143,6 +146,7 @@ export class ECPrivKey extends ECPubKey {
 
   /**
    * JWK からECPrivKey を作成するコンストラクタ
+   * kid が JWK になければ JWK Thumbprint に基づいて自動生成する。
    * @param jwk EC 秘密鍵の JWK 成分
    * @returns Promise<ECPrivKey>
    */
@@ -163,10 +167,16 @@ export class ECPrivKey extends ECPubKey {
     return ECPrivKey.fromJWK((await ECP256.gen()) as ECPirvJWK);
   }
 
+  /**
+   * ECPubKey になる
+   */
   toECPubKey(): ECPubKey {
-    return this;
+    return new ECPubKey(this._x, this._y, this._kid);
   }
 
+  /**
+   * JWK で表現する。
+   */
   toJWK(): ECPirvJWK {
     return {
       ...super.toJWK(),

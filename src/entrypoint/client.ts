@@ -220,11 +220,21 @@ window.document.getElementById('svc-access')?.addEventListener('submit', async f
       log(`${svcIDE.value} へのアカウント新規登録要求でstatus(${accessResp.status})のエラー`);
       return;
     }
+    const regRespMessage: unknown = await regResp.json();
+    if (typeof regRespMessage !== 'boolean') {
+      log(`${svcIDE.value} へのアカウント新規登録要求で不正なレスポンスボディエラー`);
+      return;
+    }
+    if (!regRespMessage) {
+      log(`ユーザ(${nameE.value}) はサービス(${svcIDE.value})へのアカウント登録に失敗`);
+      return;
+    }
     registeredUsers[svcIDE.value]?.push(nameE.value) ??
       (registeredUsers[svcIDE.value] = [nameE.value]);
     log(`ユーザ(${nameE.value}) はサービス(${svcIDE.value})にアカウント登録完了!`);
     return;
-  } else if (e.submitter.name === 'login') {
+  } // ログインを行う場合
+  else if (e.submitter.name === 'login') {
     if (!('creds' in accessRespMessage)) {
       log(`ユーザ(${nameE.value}) はサービス(${svcIDE.value}) に対して登録済みではない`);
       return;
@@ -234,10 +244,15 @@ window.document.getElementById('svc-access')?.addEventListener('submit', async f
       a = await Dev.authn({ id: svcIDE.value, ...accessRespMessage }, accessRespMessage.ovkm);
     } catch {
       // 登録済みクレデンシャルが見つからんのでシームレスな登録を試みる
-      const r = await Dev.register(
-        { id: svcIDE.value, ...accessRespMessage },
-        accessRespMessage.ovkm
-      );
+      let r: ReturnType<typeof Dev.register> extends Promise<infer P> ? P : never;
+      try {
+        r = await Dev.register({ id: svcIDE.value, ...accessRespMessage }, accessRespMessage.ovkm);
+      } catch {
+        log(
+          `ユーザ(${nameE.value}) はサービス(${svcIDE.value}) に対して登録済みだが OVK が一致しない`
+        );
+        return;
+      }
       const regReqMessage: RegistrationRequestMessage = {
         username: nameE.value,
         ...r,
@@ -251,6 +266,18 @@ window.document.getElementById('svc-access')?.addEventListener('submit', async f
         log(`${svcIDE.value} へのクレデンシャル追加登録要求でstatus(${accessResp.status})のエラー`);
         return;
       }
+      const regRespMessage: unknown = await regResp.json();
+      if (typeof regRespMessage !== 'boolean') {
+        log(`${svcIDE.value} へのアカウント新規登録要求で不正なレスポンスボディエラー`);
+        return;
+      }
+      if (!regRespMessage) {
+        log(
+          `ユーザ(${nameE.value}) はサービス(${svcIDE.value})にこのデバイスのクレデンシャルを追加登録に失敗`
+        );
+        return;
+      }
+
       log(
         `ユーザ(${nameE.value}) はサービス(${svcIDE.value})にこのデバイスのクレデンシャルを追加登録完了!`
       );
@@ -267,6 +294,15 @@ window.document.getElementById('svc-access')?.addEventListener('submit', async f
     });
     if (authnResp.status !== 200) {
       log(`${svcIDE.value} へのログイン要求でstatus(${accessResp.status})のエラー`);
+      return;
+    }
+    const authnRespMessage: unknown = await authnResp.json();
+    if (typeof authnRespMessage !== 'boolean') {
+      log(`${svcIDE.value} へのログイン要求で不正なレスポンスボディエラー`);
+      return;
+    }
+    if (!authnRespMessage) {
+      log(`ユーザ(${nameE.value}) はサービス(${svcIDE.value})にこのデバイスでログイン失敗`);
       return;
     }
     log(`ユーザ(${nameE.value}) はサービス(${svcIDE.value})にこのデバイスでログイン成功！`);
